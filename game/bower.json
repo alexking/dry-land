@@ -1,0 +1,6 @@
+{
+	"name" : "ld31",
+	"dependencies" : {
+		"underscore" : "*"
+	}
+}
