@@ -71,7 +71,7 @@ module.exports = function(grunt) {
 					base: "app",
 
 					// Serve only to localhost - change to * to make it available from anywhere
-					hostname: "localhost", 
+					hostname: "*", 
 					port: port,
 
 					// Automatically inject livereload tags into pages

@@ -1415,16 +1415,934 @@
 }.call(this));
 
 
-var Test = function(projectName) {
-	this.projectName = projectName; 
+var Canvas = function(game, element) {
+	this.element = element; 
+	this.game = game; 
+
+	// Create a 2d context 
+	this.context = this.c = this.element.getContext("2d");
+
+	// Default to no smooth scaling 
+	this.smoothScaling(false);
+
+	this.scale = game.scale; 
 };
 
-Test.prototype.hi = function() {
-	console.log("Hello and welcome to " + this.projectName);
+Canvas.prototype.clear = function() { 
+	this.c.clearRect(0, 0, this.element.width, this.element.height);
 };
+
+Canvas.prototype.flood = function(fill) {
+	this.c.fillStyle = fill;  
+	this.c.fillRect(0, 0, this.element.width, this.element.height);
+};
+
+Canvas.prototype.drawSprite = function(info, x, y, opacity) {
+	this.drawImage(info[0], info[1], info[2], info[3], info[4], x, y, opacity);
+}; 
+
+Canvas.prototype.drawImage = function(image, imageX, imageY, imageW, imageH, x, y, opacity) {
+
+	// Handle alpha 
+	if (!_.isUndefined(opacity)) {
+		this.c.save(); 
+		this.c.globalAlpha = opacity;
+	}
+
+	// Draw image 
+	this.c.drawImage(image, imageX, imageY, imageW, imageH, x, y, imageW * this.scale, imageH * this.scale);
+
+	// Much elegant 
+	if (!_.isUndefined(opacity)) {
+		this.c.restore();
+	}
+};
+
+/**
+ * Cross browser image scaling 
+ */
+Canvas.prototype.smoothScaling = function (value) {
+	var c = this.context; 
+
+	_.each(prefices(), function(prefix) {
+		if (prefix === "") {
+			c.imageSmoothingEnabled = false;
+		} else {
+			c[prefix + "ImageSmoothingEnabled"] = false;
+		} 
+	});
+
+};
+
+
+
+/**
+ * Center 
+ */
+Canvas.prototype.centerX = function(value) {
+	return this.centerObjectIn(value, this.width());
+};
+
+Canvas.prototype.centerY = function(value) {
+	return this.centerObjectIn(value, this.height());
+};
+
+Canvas.prototype.centerObjectIn = function(obj, dest) {
+	return (dest / 2)  - ((obj * this.scale) / 2); 
+
+};
+
+/**
+ * Canvas width and height 
+ */
+Canvas.prototype.width = function() {
+	return this.element.width; 
+};
+
+Canvas.prototype.height = function() {
+	return this.element.height; 
+};
+var CanvasImage = function(url) {
+	this.debug = false;
+	this.translateColors = false; 
+
+	this.canvas = document.createElement("canvas");
+	this.canvas.width = 1;
+	this.canvas.height = 1;
+	this.context = this.c = this.canvas.getContext("2d"); 
+	this.c.fillRect(0, 0, 1, 1);
+
+	this.image = new Image();
+	this.image.src = url;
+
+	var self = this; 
+	this.image.onload = function() { self.loaded(); }; 
+}; 
+
+CanvasImage.prototype.loaded = function() {
+
+	this.canvas.width = this.image.width;
+	this.canvas.height = this.image.height;
+
+	this.context.drawImage(this.image, 0, 0);
+
+	this.replaceColors(); 
+
+	console.log(hexToRGB(0x363D35));
+
+	if (this.debug) {
+		document.body.appendChild(this.canvas);
+	}
+};
+
+CanvasImage.prototype.drawable = function() {
+	return this.canvas;
+};
+
+CanvasImage.prototype.replaceColors = function() {
+
+	if (this.translateColors) {
+	console.log(this.translateColors);			
+
+		var imageData = this.c.getImageData(0, 0, this.canvas.width, this.canvas.height);
+		var data = imageData.data; 
+
+		for (var i = 0; i < data.length; i += 4) {
+			var r = data[i];
+			var g = data[i + 1];
+			var b = data[i + 2];
+			var a = data[i + 3];
+
+		//	var hex = (r * 65536) + (g * 256) + b; 
+			var rgb = r + "," + g + "," + b;
+
+
+			if (typeof this.translateColors[rgb] !== "undefined") {
+					
+				var newColor = hexToRGB(this.translateColors[rgb]);
+			
+				data[i] 	= newColor[0]; 
+				data[i + 1] = newColor[1]; 
+				data[i + 2] = newColor[2]; 
+			}
+
+		}
+
+		this.c.putImageData(imageData, 0, 0);
+
+	}
+};
+
+var Fish = function(canvas) {
+
+	this.canvas = canvas; 
+
+	// Spawn somewhere in canvas 
+	this.direction = _.random(1, 2); 
+	this.position = [this.direction == 2 ? -50 : 550, _.random(canvas.width() - Fish.waterLevel, canvas.width())];
+	
+};
+
+Fish.prototype.draw = function() {
+	
+	var sprite = this.direction + ((Fish.ticks % 2) * 2);
+
+	this.canvas.drawSprite(Fish.underwaterSprite.get("fish", sprite), this.position[0], this.position[1]);
+	
+	if (this.direction == 2) {
+		this.position[0] += 3;
+	} else {
+		this.position[0] -= 3; 
+	}
+
+	// Return true if you want to keep being a fish!
+	return true; 
+};
+var Game = function() {
+	this.scale = 1; 
+};
+function prefices() {
+	return ["", "o", "ms", "moz", "webkit"];
+}
+
+function hexToRGB(hex) {
+	var components = [];
+
+	// Shift and mask
+	components.push( (hex >> (8 * 2) ) & 0xFF);
+	components.push( (hex >> (8 * 1) ) & 0xFF);
+	components.push( (hex >> (8 * 0) ) & 0xFF);
+
+	return components;
+}
+
+function collides(a, b) {
+
+	// Test them in both orders 
+	return _.some([[a, b], [b, a]], function(objects){
+		// X, Y, W, H
+		var a = objects[0];
+		var b = objects[1];	
+
+		// If aX < bX + bW > (inside) AND 
+		if (a[0] < b[0] + b[2] && a[0] > b[0] &&
+			a[1] < b[1] + b[3] && a[1] > b[1]) {
+			return true; 
+		}
+
+	});
+
+}
+
+// LUDUM-style tests 
+/*
+console.log("--- Tests ---");
+assert(true  , collides([0, 0, 5, 5], [3, 3, 5, 5]) );
+assert(true  , collides([3, 3, 5, 5], [0, 0, 5, 5]) );
+
+assert(false , collides([0, 0, 5, 5], [6, 6, 5, 5]) );
+assert(false , collides([6, 6, 5, 5], [0, 0, 5, 5]) );
+
+assert(false , collides([0, 0, 5, 5], [2, 10, 5, 5]) );
+
+console.log("------------");
+
+
+function assert(a, b) {
+	if (a == b) {
+		console.log("✓ Pass (" + a + " == " + b + ")");
+	} else {
+		console.log("X Fail (" + a + " != " + b + ")");
+	}
+}
+*/
+var Keys = function() {
+	this.keys = [];
+
+	this.codeToName = {
+		38: "up",
+		87: "up",
+		40: "down",
+		83: "down",
+		37: "left",
+		65: "left",
+		39: "right",
+		68: "right",
+		32: "space", 
+		27: "esc"
+	};
+};
+
+Keys.prototype.pressing = function(name) {
+	return _.indexOf(this.keys, name) !== -1;
+};
+
+Keys.prototype.keyDown = function(code) {
+
+	var keyName = _.isUndefined(this.codeToName[code]) ? false : this.codeToName[code]; 
+	
+	// Don't add twice 
+	if (keyName && _.indexOf(this.keys, keyName) == -1) {
+		this.keys.push(keyName); 
+	}
+};
+
+
+Keys.prototype.keyUp = function(code) {
+	// What key just changed?
+	var keyName = _.isUndefined(this.codeToName[code]) ? false : this.codeToName[code]; 
+
+	this.keys = _.without(this.keys, keyName); 
+
+};
+
+Keys.prototype.bind = function() {
+	var self = this; 
+
+	window.onkeydown = function(event) {
+		self.keyDown(event.keyCode); 
+
+		// Cancel event 
+		return false; 
+	};
+
+	window.onkeyup = function(event) {
+		self.keyUp(event.keyCode); 
+
+		// Cancel event	
+		return false; 
+	};
+
+	window.onblur = function(event) {
+		self.keys = []; 
+
+		// Cancel event	
+		return false; 
+	};
+
+};
+
+var Particles = function() {
+
+};
+
+var Particle = function() {
+
+};
+var Player = function(game, canvas, which) {
+	this.keyName = false; 
+	this.zeroOneTwo = 0; 
+	this.zeroOneTwoDirection = 1; 
+	this.randomSlowChange = false; 
+
+	this.canvas = canvas; 
+	this.game = game; 
+
+	this.position = [0, 0]; 
+	this.platform = false; 
+
+	this.isSubmarine = false; 
+
+
+	var characterSchemes = [
+		{ 
+			"0,0,0"    	  : 0x000000,
+			"176,158,144" : 0x492B19,
+			"64,43,33"    : 0x000000
+		},
+		{ 
+			"0,0,0"    	  : 0x000000,
+			"176,158,144" : 0xB09E8F,
+			"64,43,33"    : 0x402B20
+		}
+	];
+
+	var characters = [[0, "-tail"], [1, "-tail"], [0, ""], [1, ""]];
+	var character  = characters[which - 1]; 
+
+	var player = new CanvasImage("/assets/character" + character[1] + "0.png"); 
+
+	player.translateColors = characterSchemes[character[0]];
+
+	this.sprite = new Sprite(player.drawable(), {
+		walking: {
+			offsetX: 0, 		
+			offsetY: 0, 
+			gridX: 16,
+			gridY: 32
+		},
+		swimming: {
+			offsetX: 0, 
+			offsetY: 32,
+			gridX: 32,
+			gridY: 32
+		}
+	}); 
+
+	this.health = 5; 
+	this.maxHealth = 5; 
+	this.holdingBreath = true; 
+	this.breathHurtRate = 200;
+	this.holdingBreathFor = 0;
+
+	this.firingMissile = true; 
+	this.direction = 1; 
+
+	this.startTime = Date.now(); 
+
+	// Missiles 
+	this.missiles = [ ]; 
+
+};
+
+Player.prototype.bounds = function() {
+	return [
+		this.position[0], 
+		this.position[1], 
+		32 * this.game.scale, 
+		32 * this.game.scale
+	];
+};
+
+/**
+ * Loop 
+ */
+Player.prototype.draw = function() {
+	var self = this;
+
+	// How much time has elapsed 
+	var elapsed = Date.now() - this.startTime ;
+
+	// Animate every 100ms 
+	if (elapsed > 100) {
+		this.zeroOneTwo += this.zeroOneTwoDirection; 
+	
+		if (this.zeroOneTwo === 2 || this.zeroOneTwo === 0) {
+			this.zeroOneTwoDirection = -1 * this.zeroOneTwoDirection;
+		}
+
+		this.startTime = Date.now();
+	}
+
+
+	if (!this.inWater) {
+	
+		// Gravity!
+		this.position[1] += 5; 
+
+	} else if (!this.isSubmarine) {
+
+		this.position[1] += 1;
+
+	} 
+
+	// Do not go outside the bounds of the canvas 
+	if (this.position[1] > this.canvas.height() - (32 * this.game.scale)) {
+		this.position[1] = this.canvas.height() - (32 * this.game.scale);
+	}
+
+	if (this.position[1] < 0) {
+		this.position[1] = 0;
+	}	
+
+
+	var waterY = this.canvas.height() - this.waterLevel;
+
+
+	// You can't go above the water level when in water 
+	if (this.inWater && this.position[1] < this.canvas.height() - this.waterLevel - 16) {
+		this.position[1] = this.canvas.height() - this.waterLevel - 16;
+	}
+
+	// Check platform if we aren't a sub 
+	if (this.platform && !this.isSubmarine) { 
+
+		// If we are "on" it
+		if (
+			this.position[0] > this.platform[1] + 10 - (18 * this.game.scale) &&
+			this.position[0] < this.platform[1] - 8 + (this.platform[3] * this.game.scale) 
+		) {
+
+			// Can't go through the top 
+			if (this.position[1] > this.platform[0] - (32 * this.game.scale)  &&
+				this.position[1] < this.platform[1] + (32 * this.game.scale)) {
+				this.position[1] = this.platform[0] - (32 * this.game.scale) ; 
+			}
+
+		}
+
+
+	}
+
+
+	// Are we under water without a sub?
+	if (!this.isSubmarine && waterY < this.position[1] + 32) {
+		this.inWater = true; 
+
+		// Well, is our head under water though? 
+		if (this.waterLevel > ( this.canvas.height() - this.position[1] - 10)) {
+
+			// Are we holding our breath?
+			if (this.holdingBreath) {
+				this.holdingBreathFor++; 
+			} 
+
+			// Did we take damage yet?
+			if (this.holdingBreathFor > this.breathHurtRate) {
+
+				// Reset the counter 
+				this.holdingBreathFor = 0;
+
+				// Take damage 
+				this.health--;
+			}
+
+		} else {
+
+			// Breath!
+			if (this.holdingBreath && this.holdingBreathFor > 0) {
+				this.holdingBreathFor -= 2; 
+			} else {
+				this.holdingBreathFor = 0;
+			}
+		}
+	}
+
+
+	if (_.random(1, 200) == 200) {
+		this.randomSlowChange = ! this.randomSlowChange;
+	}
+
+	var zeroOneTwo = 1;
+	
+	var spriteNumber = 1; 
+
+	var speed; 
+	if (this.isSubmarine) { 
+
+		this.canvas.drawSprite(this.underwaterSprite.get("submarine", this.direction), this.position[0], this.position[1]);
+
+		speed = 3; 
+
+		if (this.keys.pressing("left")) {
+
+			this.position[0] -= speed; 
+			this.direction = 2; 
+
+		} else if (this.keys.pressing("right")) {
+
+			this.position[0] += speed; 
+			this.direction = 1;
+		} 
+
+		if (this.keys.pressing("down")) {
+
+			this.position[1] += speed; 
+			velocityY = speed;
+
+		} else if (this.keys.pressing("up")) {
+			this.position[1] -= speed; 
+			velocityY = -1 * speed;
+		}
+
+		// Missile 
+		if (this.keys.pressing("space")) {
+			
+			if (!this.firingMissile) {
+			
+				this.missiles.push({
+					position: [this.position[0] + 14, this.position[1] + 18],
+					velocity: [this.direction == 1 ? 8 : -8, 0],
+					direction: this.direction
+				});
+			}
+
+			this.firingMissile = true;
+
+		} else {
+			this.firingMissile = false; 
+		}
+
+	} else {
+
+		var spriteToUse;
+		if (this.inWater) {
+			spriteToUse = "swimming"; 
+
+			speed = 2; 
+
+
+			if (this.keys.pressing("left")) {
+				spriteNumber = 2;
+
+				this.position[0] -= speed; 
+
+			} else if (this.keys.pressing("right")) {
+				spriteNumber = 4;
+
+				this.position[0] += speed; 
+
+			} 
+
+			if (this.keys.pressing("down")) {
+				spriteNumber = 1;
+
+				this.position[1] += speed; 
+
+			} else if (this.keys.pressing("up")) {
+				spriteNumber = 3; 
+				this.position[1] -= speed; 
+			}
+
+		} else {
+			spriteToUse = "walking";
+
+			if (this.keys.pressing("left")) {
+				spriteNumber = 3 + this.zeroOneTwo; 
+				this.position[0] -= 3; 
+			} else if (this.keys.pressing("right")) {
+				spriteNumber = 6 + this.zeroOneTwo;  
+				this.position[0] += 3; 
+			} else {
+				spriteNumber = 1 + this.randomSlowChange;
+			}
+
+		}
+
+		this.canvas.drawSprite(this.sprite.get(spriteToUse, spriteNumber), this.position[0], this.position[1]);
+
+	}
+
+
+
+	// Render each missile 
+	this.missiles = _.filter(this.missiles, function(missile) {
+		// Continue to propel 
+		missile.position[0] += missile.velocity[0]; 
+		missile.position[1] += missile.velocity[1]; 
+
+		self.canvas.drawSprite(self.underwaterSprite.get("missile", missile.direction), missile.position[0], missile.position[1]);
+
+		// Are we past the edges?
+		if (missile.position[0] > 500) {
+			return false; 
+		}
+		
+		// Keep it 
+		return true; 
+
+	});
+
+};
+
+
+var Sprite = function(image, data) {
+	
+	// Auto load urls 
+	if (_.isString(image)) {
+		console.log("Found a string one!");
+		this.image = new Image();
+		this.image.src = image; 
+	} else {
+		this.image = image; 
+	}
+	
+	this.data = data; 
+};
+
+
+Sprite.prototype.get = function(name, x, y) {
+	
+	// Defaults 
+	x = _.isUndefined(x) ? 0 : (x - 1);
+	y = _.isUndefined(y) ? 0 : (y - 1);
+
+	var gridX = this.data[name].gridX; 
+	var gridY = this.data[name].gridY; 
+
+	var offsetX = this.data[name].offsetX; 
+	var offsetY = this.data[name].offsetY; 
+
+	return [ this.image, (gridX * x) + offsetX, (gridY * y) + offsetY, gridX, gridY ];
+
+};
+
+
 window.onload = function() {
 
-	var test = new Test("ld31"); 
-	test.hi();
+	var game = new Game(); 
+	game.scale = 2; 
+
+	var canvas = new Canvas(game, document.getElementById("canvas")); 
+	
+	var c = canvas.context; 
+
+	var start = new Sprite("/assets/start.png", {
+		button: {
+			offsetX: 0,
+			offsetY: 0,
+			gridX: 52, 
+			gridY: 18
+		}
+	});
+
+	var ui = new Sprite("/assets/ui.png", {
+		heart: {
+			offsetX: 0, 		
+			offsetY: 0, 
+			gridX: 8,
+			gridY: 8
+		},
+		text: {
+			offsetX: 0,
+			offsetY: 8,
+			gridX: 100,
+			gridY: 16
+		},
+		cause: {
+			offsetX: 0,
+			offsetY: 40,
+			gridX: 100,
+			gridY: 8
+		}
+
+	}); 
+
+	var underwater = new Sprite("/assets/underwater.png", {
+		submarine: {
+			offsetX: 0, 		
+			offsetY: 0, 
+			gridX: 32,
+			gridY: 32
+		},
+		missile: {
+			offsetX: 0, 		
+			offsetY: 64, 
+			gridX: 16,
+			gridY: 16
+		},
+		pipe: {
+			offsetX: 0, 		
+			offsetY: 32, 
+			gridX: 32,
+			gridY: 16
+		},
+		fish: {
+			offsetX: 0, 		
+			offsetY: 96, 
+			gridX: 32,
+			gridY: 16
+		}
+	}); 
+
+	Fish.underwaterSprite = underwater; 
+
+	var player = new Player(game, canvas, _.random(1, 4));
+
+	player.canvas = canvas; 
+	player.inWater = false; 
+	player.platform  = [canvas.centerY(18), canvas.centerX(52), 18, 52];
+	player.position = [canvas.centerX(16), 0];
+	player.underwaterSprite = underwater;
+
+	var alternate = true; 
+	var zeroOneTwo = 1; 
+	var zeroOneTwoDirection = 1; 
+
+	var startTime = Date.now(); 
+	var tickTime = Date.now(); 
+	var frames = 0; 
+	var ticks = 0; 
+
+	var waterDelay = 500; 
+	var waterLevel = 0; 
+
+	var healthTotal = 5; 
+	var health = 5; 
+
+	var fishes = []; 
+
+	// Keys 
+	var keys = new Keys();
+	keys.bind();
+
+	function loop() {
+
+		// Check for game over 
+		if (player.health === 0) {
+
+			canvas.flood("rgba(100, 0, 0, 0.8)");
+
+			canvas.drawSprite(ui.get("text", 1), canvas.centerX(72), canvas.centerY(10)); 
+
+			canvas.drawSprite(ui.get("cause", 1, 1), canvas.centerX(57), canvas.centerY(5) + 20); 
+
+			return; 	
+		}
+
+		// Look for the 50ms tick 
+		if (Date.now() - tickTime > 50) {
+			ticks++; 
+			Fish.ticks = ticks; 
+
+			tickTime = Date.now(); 
+		}
+
+		canvas.clear();
+
+		frames ++; 
+
+		if ( frames % 10 == 1) {
+			alternate = ! alternate;
+		}
+
+		if (frames % 2 == 1) {
+			
+			// Draw some water 
+			if (waterLevel < canvas.height()) {
+				waterLevel += 1; 
+				player.waterLevel = waterLevel;
+				Fish.waterLevel = waterLevel;
+			}
+
+		}
+	
+		var waterY = canvas.height() - waterLevel;
+
+		// Water BG
+		c.fillStyle = "rgba(34, 32, 52, 1)"; //"#30374E";
+		c.fillRect(0, canvas.height() - waterLevel - 1, canvas.width(), waterLevel); 
+
+		// Had the platform been destroyed yet? 
+		if (waterY < player.platform[1]) {
+		
+			// Destroy the platform 
+			player.platform = false; 
+		} else {
+
+			// Place the "start button"
+			if (waterLevel < 50) {
+				canvas.drawSprite(start.get("button", 1, 1), canvas.centerX(52), canvas.centerY(18));
+			
+				if (waterLevel > 25) {
+					canvas.drawSprite(start.get("button", 1, 2), canvas.centerX(52), canvas.centerY(18), ((waterLevel - 25) / 25));
+				}
+
+			} else if (waterLevel < 100) {
+
+				// So code duplication 
+				canvas.drawSprite(start.get("button", 1, 2), canvas.centerX(52), canvas.centerY(18));
+			
+			} else if (waterLevel < 400) {
+				canvas.drawSprite(start.get("button", 1, 3), canvas.centerX(52), canvas.centerY(18));
+				
+				var opacity = 1; 
+				if (waterLevel > 300) {
+					opacity = 0.1; 
+				} else {
+
+				}
+				canvas.drawSprite(start.get("button", 1, 4), canvas.centerX(52), canvas.centerY(18) + ((waterLevel - 100) * 3) );
+			} 
+
+
+		
+		}
+
+		// Draw water 
+		c.fillStyle = "rgba(48, 56, 77, 1)"; //"#30374E";
+		c.fillRect(0, canvas.height() - waterLevel, canvas.width(), waterLevel); 
+
+		// Only handle sub display until we are the sub
+		if (!player.isSubmarine) {
+
+			// Is it sub time? I think it's sub time.
+			canvas.drawSprite(underwater.get("submarine", 1), - 56, 500 - 40);
+		}
+
+		// And a pipe. We need a pipe. 
+ 		canvas.drawSprite(underwater.get("pipe", (ticks % 4) +2 ) , 400, 500 - 24);
+
+ 		// Is the pipe colliding with anything 
+ 		if (collides([400, 500 - (12 * game.scale), game.scale * 12, game.scale * 12], player.bounds())) {
+
+ 			// Yes, explain this 
+			canvas.drawSprite(ui.get("cause", 1, (player.submarine ? -1 : 0) ), 180, 500 - 20); 
+
+ 		}
+
+
+ 		// Is the sub colliding with anything 
+ 		if (collides([0, 500 - 40, game.scale * 34, game.scale * 20], player.bounds())) {
+
+ 			// Sub activated 
+ 			player.isSubmarine = true; 
+
+ 		}
+
+		// Tell the player what keys are being pressed
+		player.keys = keys;
+
+		// Let it draw itself - not sure this is a good idea 
+		player.draw();
+		
+
+		// If the water is over 200, start spawning fish 
+		if (waterLevel > 100) {
+
+			// What are the chances? (somewhere around 1 in 100)
+			if (_.random(1, 100) == 1) {
+				this.fishes.push(new Fish(canvas));
+			}
+
+		}
+
+		// Draw every fish 
+		this.fishes = _.filter(this.fishes, function(fish) {
+			return fish.draw();
+		});
+
+
+		// UI 
+		var healthX = 10; 
+		for (var healthNumber = 0; healthNumber < player.maxHealth; healthNumber++) { 
+
+			if (player.health > healthNumber) {
+				canvas.drawSprite(ui.get("heart", 1), healthX, 10);
+			} else { 
+				canvas.drawSprite(ui.get("heart", 2), healthX, 10);
+			}
+
+			healthX += 9 * game.scale; 
+		}
+
+
+
+		// Debug code 
+		var debugY = 20; 
+		var debugOffsetX = healthX; 
+
+		c.font = "14px Helvetica";
+
+		c.fillStyle = "rgba(255, 255, 255, 0.5)";
+		c.fillText("Frames: " + frames % 30, debugOffsetX + 10, debugY); 
+		c.fillText("Seconds: " + Math.round((Date.now() - startTime) / 1000), debugOffsetX + 100, debugY); 
+		c.fillText("FPS: " + Math.round(frames / ((Date.now() - startTime) / 1000)), debugOffsetX + 200, debugY); 
+		c.fillText("M: " + player.missiles.length, debugOffsetX + 260, debugY); 
+		
+
+		// Request the next frame 
+		window.requestAnimationFrame(loop);
+
+	}
+
+	window.requestAnimationFrame(function() {
+		loop();
+	});
+
+
+	
+
+
 };
 //# sourceMappingURL=index.js.map

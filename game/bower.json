@@ -1,6 +1,7 @@
 {
-	"name" : "ld31",
-	"dependencies" : {
-		"underscore" : "*"
-	}
+  "name": "ld31",
+  "dependencies": {
+    "underscore": "*",
+    "victor": "~0.2.6"
+  }
 }
