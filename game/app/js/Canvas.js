@@ -33,7 +33,11 @@ Canvas.prototype.drawImage = function(image, imageX, imageY, imageW, imageH, x, 
 	}
 
 	// Draw image 
+	try {
 	this.c.drawImage(image, imageX, imageY, imageW, imageH, x, y, imageW * this.scale, imageH * this.scale);
+	} catch(err) {
+
+	}
 
 	// Much elegant 
 	if (!_.isUndefined(opacity)) {
