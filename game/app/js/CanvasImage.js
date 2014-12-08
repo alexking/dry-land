@@ -24,8 +24,6 @@ CanvasImage.prototype.loaded = function() {
 
 	this.replaceColors(); 
 
-	console.log(hexToRGB(0x363D35));
-
 	if (this.debug) {
 		document.body.appendChild(this.canvas);
 	}
@@ -38,7 +36,6 @@ CanvasImage.prototype.drawable = function() {
 CanvasImage.prototype.replaceColors = function() {
 
 	if (this.translateColors) {
-	console.log(this.translateColors);			
 
 		var imageData = this.c.getImageData(0, 0, this.canvas.width, this.canvas.height);
 		var data = imageData.data; 

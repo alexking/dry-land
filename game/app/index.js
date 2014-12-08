@@ -1,3 +1,1357 @@
+/*!
+ *  howler.js v1.1.25
+ *  howlerjs.com
+ *
+ *  (c) 2013-2014, James Simpson of GoldFire Studios
+ *  goldfirestudios.com
+ *
+ *  MIT License
+ */
+
+(function() {
+  // setup
+  var cache = {};
+
+  // setup the audio context
+  var ctx = null,
+    usingWebAudio = true,
+    noAudio = false;
+  try {
+    if (typeof AudioContext !== 'undefined') {
+      ctx = new AudioContext();
+    } else if (typeof webkitAudioContext !== 'undefined') {
+      ctx = new webkitAudioContext();
+    } else {
+      usingWebAudio = false;
+    }
+  } catch(e) {
+    usingWebAudio = false;
+  }
+
+  if (!usingWebAudio) {
+    if (typeof Audio !== 'undefined') {
+      try {
+        new Audio();
+      } catch(e) {
+        noAudio = true;
+      }
+    } else {
+      noAudio = true;
+    }
+  }
+
+  // create a master gain node
+  if (usingWebAudio) {
+    var masterGain = (typeof ctx.createGain === 'undefined') ? ctx.createGainNode() : ctx.createGain();
+    masterGain.gain.value = 1;
+    masterGain.connect(ctx.destination);
+  }
+
+  // create global controller
+  var HowlerGlobal = function(codecs) {
+    this._volume = 1;
+    this._muted = false;
+    this.usingWebAudio = usingWebAudio;
+    this.ctx = ctx;
+    this.noAudio = noAudio;
+    this._howls = [];
+    this._codecs = codecs;
+    this.iOSAutoEnable = true;
+  };
+  HowlerGlobal.prototype = {
+    /**
+     * Get/set the global volume for all sounds.
+     * @param  {Float} vol Volume from 0.0 to 1.0.
+     * @return {Howler/Float}     Returns self or current volume.
+     */
+    volume: function(vol) {
+      var self = this;
+
+      // make sure volume is a number
+      vol = parseFloat(vol);
+
+      if (vol >= 0 && vol <= 1) {
+        self._volume = vol;
+
+        if (usingWebAudio) {
+          masterGain.gain.value = vol;
+        }
+
+        // loop through cache and change volume of all nodes that are using HTML5 Audio
+        for (var key in self._howls) {
+          if (self._howls.hasOwnProperty(key) && self._howls[key]._webAudio === false) {
+            // loop through the audio nodes
+            for (var i=0; i<self._howls[key]._audioNode.length; i++) {
+              self._howls[key]._audioNode[i].volume = self._howls[key]._volume * self._volume;
+            }
+          }
+        }
+
+        return self;
+      }
+
+      // return the current global volume
+      return (usingWebAudio) ? masterGain.gain.value : self._volume;
+    },
+
+    /**
+     * Mute all sounds.
+     * @return {Howler}
+     */
+    mute: function() {
+      this._setMuted(true);
+
+      return this;
+    },
+
+    /**
+     * Unmute all sounds.
+     * @return {Howler}
+     */
+    unmute: function() {
+      this._setMuted(false);
+
+      return this;
+    },
+
+    /**
+     * Handle muting and unmuting globally.
+     * @param  {Boolean} muted Is muted or not.
+     */
+    _setMuted: function(muted) {
+      var self = this;
+
+      self._muted = muted;
+
+      if (usingWebAudio) {
+        masterGain.gain.value = muted ? 0 : self._volume;
+      }
+
+      for (var key in self._howls) {
+        if (self._howls.hasOwnProperty(key) && self._howls[key]._webAudio === false) {
+          // loop through the audio nodes
+          for (var i=0; i<self._howls[key]._audioNode.length; i++) {
+            self._howls[key]._audioNode[i].muted = muted;
+          }
+        }
+      }
+    },
+
+    /**
+     * Check for codec support.
+     * @param  {String} ext Audio file extention.
+     * @return {Boolean}
+     */
+    codecs: function(ext) {
+      return this._codecs[ext];
+    },
+
+    /**
+     * iOS will only allow audio to be played after a user interaction.
+     * Attempt to automatically unlock audio on the first user interaction.
+     * Concept from: http://paulbakaus.com/tutorials/html5/web-audio-on-ios/
+     * @return {Howler}
+     */
+    _enableiOSAudio: function() {
+      var self = this;
+
+      // only run this on iOS if audio isn't already eanbled
+      if (ctx && (self._iOSEnabled || !/iPhone|iPad|iPod/i.test(navigator.userAgent))) {
+        return;
+      }
+
+      self._iOSEnabled = false;
+
+      // call this method on touch start to create and play a buffer,
+      // then check if the audio actually played to determine if
+      // audio has now been unlocked on iOS
+      var unlock = function() {
+        // create an empty buffer
+        var buffer = ctx.createBuffer(1, 1, 22050);
+        var source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+
+        // play the empty buffer
+        if (typeof source.start === 'undefined') {
+          source.noteOn(0);
+        } else {
+          source.start(0);
+        }
+
+        // setup a timeout to check that we are unlocked on the next event loop
+        setTimeout(function() {
+          if ((source.playbackState === source.PLAYING_STATE || source.playbackState === source.FINISHED_STATE)) {
+            // update the unlocked state and prevent this check from happening again
+            self._iOSEnabled = true;
+            self.iOSAutoEnable = false;
+
+            // remove the touch start listener
+            window.removeEventListener('touchstart', unlock, false);
+          }
+        }, 0);
+      };
+
+      // setup a touch start listener to attempt an unlock in
+      window.addEventListener('touchstart', unlock, false);
+
+      return self;
+    }
+  };
+
+  // check for browser codec support
+  var audioTest = null;
+  var codecs = {};
+  if (!noAudio) {
+    audioTest = new Audio();
+    codecs = {
+      mp3: !!audioTest.canPlayType('audio/mpeg;').replace(/^no$/, ''),
+      opus: !!audioTest.canPlayType('audio/ogg; codecs="opus"').replace(/^no$/, ''),
+      ogg: !!audioTest.canPlayType('audio/ogg; codecs="vorbis"').replace(/^no$/, ''),
+      wav: !!audioTest.canPlayType('audio/wav; codecs="1"').replace(/^no$/, ''),
+      aac: !!audioTest.canPlayType('audio/aac;').replace(/^no$/, ''),
+      m4a: !!(audioTest.canPlayType('audio/x-m4a;') || audioTest.canPlayType('audio/m4a;') || audioTest.canPlayType('audio/aac;')).replace(/^no$/, ''),
+      mp4: !!(audioTest.canPlayType('audio/x-mp4;') || audioTest.canPlayType('audio/mp4;') || audioTest.canPlayType('audio/aac;')).replace(/^no$/, ''),
+      weba: !!audioTest.canPlayType('audio/webm; codecs="vorbis"').replace(/^no$/, '')
+    };
+  }
+
+  // allow access to the global audio controls
+  var Howler = new HowlerGlobal(codecs);
+
+  // setup the audio object
+  var Howl = function(o) {
+    var self = this;
+
+    // setup the defaults
+    self._autoplay = o.autoplay || false;
+    self._buffer = o.buffer || false;
+    self._duration = o.duration || 0;
+    self._format = o.format || null;
+    self._loop = o.loop || false;
+    self._loaded = false;
+    self._sprite = o.sprite || {};
+    self._src = o.src || '';
+    self._pos3d = o.pos3d || [0, 0, -0.5];
+    self._volume = o.volume !== undefined ? o.volume : 1;
+    self._urls = o.urls || [];
+    self._rate = o.rate || 1;
+
+    // allow forcing of a specific panningModel ('equalpower' or 'HRTF'),
+    // if none is specified, defaults to 'equalpower' and switches to 'HRTF'
+    // if 3d sound is used
+    self._model = o.model || null;
+
+    // setup event functions
+    self._onload = [o.onload || function() {}];
+    self._onloaderror = [o.onloaderror || function() {}];
+    self._onend = [o.onend || function() {}];
+    self._onpause = [o.onpause || function() {}];
+    self._onplay = [o.onplay || function() {}];
+
+    self._onendTimer = [];
+
+    // Web Audio or HTML5 Audio?
+    self._webAudio = usingWebAudio && !self._buffer;
+
+    // check if we need to fall back to HTML5 Audio
+    self._audioNode = [];
+    if (self._webAudio) {
+      self._setupAudioNode();
+    }
+
+    // automatically try to enable audio on iOS
+    if (typeof ctx !== 'undefined' && ctx && Howler.iOSAutoEnable) {
+      Howler._enableiOSAudio();
+    }
+
+    // add this to an array of Howl's to allow global control
+    Howler._howls.push(self);
+
+    // load the track
+    self.load();
+  };
+
+  // setup all of the methods
+  Howl.prototype = {
+    /**
+     * Load an audio file.
+     * @return {Howl}
+     */
+    load: function() {
+      var self = this,
+        url = null;
+
+      // if no audio is available, quit immediately
+      if (noAudio) {
+        self.on('loaderror');
+        return;
+      }
+
+      // loop through source URLs and pick the first one that is compatible
+      for (var i=0; i<self._urls.length; i++) {
+        var ext, urlItem;
+
+        if (self._format) {
+          // use specified audio format if available
+          ext = self._format;
+        } else {
+          // figure out the filetype (whether an extension or base64 data)
+          urlItem = self._urls[i];
+          ext = /^data:audio\/([^;,]+);/i.exec(urlItem);
+          if (!ext) {
+            ext = /\.([^.]+)$/.exec(urlItem.split('?', 1)[0]);
+          }
+
+          if (ext) {
+            ext = ext[1].toLowerCase();
+          } else {
+            self.on('loaderror');
+            return;
+          }
+        }
+
+        if (codecs[ext]) {
+          url = self._urls[i];
+          break;
+        }
+      }
+
+      if (!url) {
+        self.on('loaderror');
+        return;
+      }
+
+      self._src = url;
+
+      if (self._webAudio) {
+        loadBuffer(self, url);
+      } else {
+        var newNode = new Audio();
+
+        // listen for errors with HTML5 audio (http://dev.w3.org/html5/spec-author-view/spec.html#mediaerror)
+        newNode.addEventListener('error', function () {
+          if (newNode.error && newNode.error.code === 4) {
+            HowlerGlobal.noAudio = true;
+          }
+
+          self.on('loaderror', {type: newNode.error ? newNode.error.code : 0});
+        }, false);
+
+        self._audioNode.push(newNode);
+
+        // setup the new audio node
+        newNode.src = url;
+        newNode._pos = 0;
+        newNode.preload = 'auto';
+        newNode.volume = (Howler._muted) ? 0 : self._volume * Howler.volume();
+
+        // setup the event listener to start playing the sound
+        // as soon as it has buffered enough
+        var listener = function() {
+          // round up the duration when using HTML5 Audio to account for the lower precision
+          self._duration = Math.ceil(newNode.duration * 10) / 10;
+
+          // setup a sprite if none is defined
+          if (Object.getOwnPropertyNames(self._sprite).length === 0) {
+            self._sprite = {_default: [0, self._duration * 1000]};
+          }
+
+          if (!self._loaded) {
+            self._loaded = true;
+            self.on('load');
+          }
+
+          if (self._autoplay) {
+            self.play();
+          }
+
+          // clear the event listener
+          newNode.removeEventListener('canplaythrough', listener, false);
+        };
+        newNode.addEventListener('canplaythrough', listener, false);
+        newNode.load();
+      }
+
+      return self;
+    },
+
+    /**
+     * Get/set the URLs to be pulled from to play in this source.
+     * @param  {Array} urls  Arry of URLs to load from
+     * @return {Howl}        Returns self or the current URLs
+     */
+    urls: function(urls) {
+      var self = this;
+
+      if (urls) {
+        self.stop();
+        self._urls = (typeof urls === 'string') ? [urls] : urls;
+        self._loaded = false;
+        self.load();
+
+        return self;
+      } else {
+        return self._urls;
+      }
+    },
+
+    /**
+     * Play a sound from the current time (0 by default).
+     * @param  {String}   sprite   (optional) Plays from the specified position in the sound sprite definition.
+     * @param  {Function} callback (optional) Returns the unique playback id for this sound instance.
+     * @return {Howl}
+     */
+    play: function(sprite, callback) {
+      var self = this;
+
+      // if no sprite was passed but a callback was, update the variables
+      if (typeof sprite === 'function') {
+        callback = sprite;
+      }
+
+      // use the default sprite if none is passed
+      if (!sprite || typeof sprite === 'function') {
+        sprite = '_default';
+      }
+
+      // if the sound hasn't been loaded, add it to the event queue
+      if (!self._loaded) {
+        self.on('load', function() {
+          self.play(sprite, callback);
+        });
+
+        return self;
+      }
+
+      // if the sprite doesn't exist, play nothing
+      if (!self._sprite[sprite]) {
+        if (typeof callback === 'function') callback();
+        return self;
+      }
+
+      // get the node to playback
+      self._inactiveNode(function(node) {
+        // persist the sprite being played
+        node._sprite = sprite;
+
+        // determine where to start playing from
+        var pos = (node._pos > 0) ? node._pos : self._sprite[sprite][0] / 1000;
+
+        // determine how long to play for
+        var duration = 0;
+        if (self._webAudio) {
+          duration = self._sprite[sprite][1] / 1000 - node._pos;
+          if (node._pos > 0) {
+            pos = self._sprite[sprite][0] / 1000 + pos;
+          }
+        } else {
+          duration = self._sprite[sprite][1] / 1000 - (pos - self._sprite[sprite][0] / 1000);
+        }
+
+        // determine if this sound should be looped
+        var loop = !!(self._loop || self._sprite[sprite][2]);
+
+        // set timer to fire the 'onend' event
+        var soundId = (typeof callback === 'string') ? callback : Math.round(Date.now() * Math.random()) + '',
+          timerId;
+        (function() {
+          var data = {
+            id: soundId,
+            sprite: sprite,
+            loop: loop
+          };
+          timerId = setTimeout(function() {
+            // if looping, restart the track
+            if (!self._webAudio && loop) {
+              self.stop(data.id).play(sprite, data.id);
+            }
+
+            // set web audio node to paused at end
+            if (self._webAudio && !loop) {
+              self._nodeById(data.id).paused = true;
+              self._nodeById(data.id)._pos = 0;
+
+              // clear the end timer
+              self._clearEndTimer(data.id);
+            }
+
+            // end the track if it is HTML audio and a sprite
+            if (!self._webAudio && !loop) {
+              self.stop(data.id);
+            }
+
+            // fire ended event
+            self.on('end', soundId);
+          }, duration * 1000);
+
+          // store the reference to the timer
+          self._onendTimer.push({timer: timerId, id: data.id});
+        })();
+
+        if (self._webAudio) {
+          var loopStart = self._sprite[sprite][0] / 1000,
+            loopEnd = self._sprite[sprite][1] / 1000;
+
+          // set the play id to this node and load into context
+          node.id = soundId;
+          node.paused = false;
+          refreshBuffer(self, [loop, loopStart, loopEnd], soundId);
+          self._playStart = ctx.currentTime;
+          node.gain.value = self._volume;
+
+          if (typeof node.bufferSource.start === 'undefined') {
+            node.bufferSource.noteGrainOn(0, pos, duration);
+          } else {
+            node.bufferSource.start(0, pos, duration);
+          }
+        } else {
+          if (node.readyState === 4 || !node.readyState && navigator.isCocoonJS) {
+            node.readyState = 4;
+            node.id = soundId;
+            node.currentTime = pos;
+            node.muted = Howler._muted || node.muted;
+            node.volume = self._volume * Howler.volume();
+            setTimeout(function() { node.play(); }, 0);
+          } else {
+            self._clearEndTimer(soundId);
+
+            (function(){
+              var sound = self,
+                playSprite = sprite,
+                fn = callback,
+                newNode = node;
+              var listener = function() {
+                sound.play(playSprite, fn);
+
+                // clear the event listener
+                newNode.removeEventListener('canplaythrough', listener, false);
+              };
+              newNode.addEventListener('canplaythrough', listener, false);
+            })();
+
+            return self;
+          }
+        }
+
+        // fire the play event and send the soundId back in the callback
+        self.on('play');
+        if (typeof callback === 'function') callback(soundId);
+
+        return self;
+      });
+
+      return self;
+    },
+
+    /**
+     * Pause playback and save the current position.
+     * @param {String} id (optional) The play instance ID.
+     * @return {Howl}
+     */
+    pause: function(id) {
+      var self = this;
+
+      // if the sound hasn't been loaded, add it to the event queue
+      if (!self._loaded) {
+        self.on('play', function() {
+          self.pause(id);
+        });
+
+        return self;
+      }
+
+      // clear 'onend' timer
+      self._clearEndTimer(id);
+
+      var activeNode = (id) ? self._nodeById(id) : self._activeNode();
+      if (activeNode) {
+        activeNode._pos = self.pos(null, id);
+
+        if (self._webAudio) {
+          // make sure the sound has been created
+          if (!activeNode.bufferSource || activeNode.paused) {
+            return self;
+          }
+
+          activeNode.paused = true;
+          if (typeof activeNode.bufferSource.stop === 'undefined') {
+            activeNode.bufferSource.noteOff(0);
+          } else {
+            activeNode.bufferSource.stop(0);
+          }
+        } else {
+          activeNode.pause();
+        }
+      }
+
+      self.on('pause');
+
+      return self;
+    },
+
+    /**
+     * Stop playback and reset to start.
+     * @param  {String} id  (optional) The play instance ID.
+     * @return {Howl}
+     */
+    stop: function(id) {
+      var self = this;
+
+      // if the sound hasn't been loaded, add it to the event queue
+      if (!self._loaded) {
+        self.on('play', function() {
+          self.stop(id);
+        });
+
+        return self;
+      }
+
+      // clear 'onend' timer
+      self._clearEndTimer(id);
+
+      var activeNode = (id) ? self._nodeById(id) : self._activeNode();
+      if (activeNode) {
+        activeNode._pos = 0;
+
+        if (self._webAudio) {
+          // make sure the sound has been created
+          if (!activeNode.bufferSource || activeNode.paused) {
+            return self;
+          }
+
+          activeNode.paused = true;
+
+          if (typeof activeNode.bufferSource.stop === 'undefined') {
+            activeNode.bufferSource.noteOff(0);
+          } else {
+            activeNode.bufferSource.stop(0);
+          }
+        } else if (!isNaN(activeNode.duration)) {
+          activeNode.pause();
+          activeNode.currentTime = 0;
+        }
+      }
+
+      return self;
+    },
+
+    /**
+     * Mute this sound.
+     * @param  {String} id (optional) The play instance ID.
+     * @return {Howl}
+     */
+    mute: function(id) {
+      var self = this;
+
+      // if the sound hasn't been loaded, add it to the event queue
+      if (!self._loaded) {
+        self.on('play', function() {
+          self.mute(id);
+        });
+
+        return self;
+      }
+
+      var activeNode = (id) ? self._nodeById(id) : self._activeNode();
+      if (activeNode) {
+        if (self._webAudio) {
+          activeNode.gain.value = 0;
+        } else {
+          activeNode.muted = true;
+        }
+      }
+
+      return self;
+    },
+
+    /**
+     * Unmute this sound.
+     * @param  {String} id (optional) The play instance ID.
+     * @return {Howl}
+     */
+    unmute: function(id) {
+      var self = this;
+
+      // if the sound hasn't been loaded, add it to the event queue
+      if (!self._loaded) {
+        self.on('play', function() {
+          self.unmute(id);
+        });
+
+        return self;
+      }
+
+      var activeNode = (id) ? self._nodeById(id) : self._activeNode();
+      if (activeNode) {
+        if (self._webAudio) {
+          activeNode.gain.value = self._volume;
+        } else {
+          activeNode.muted = false;
+        }
+      }
+
+      return self;
+    },
+
+    /**
+     * Get/set volume of this sound.
+     * @param  {Float}  vol Volume from 0.0 to 1.0.
+     * @param  {String} id  (optional) The play instance ID.
+     * @return {Howl/Float}     Returns self or current volume.
+     */
+    volume: function(vol, id) {
+      var self = this;
+
+      // make sure volume is a number
+      vol = parseFloat(vol);
+
+      if (vol >= 0 && vol <= 1) {
+        self._volume = vol;
+
+        // if the sound hasn't been loaded, add it to the event queue
+        if (!self._loaded) {
+          self.on('play', function() {
+            self.volume(vol, id);
+          });
+
+          return self;
+        }
+
+        var activeNode = (id) ? self._nodeById(id) : self._activeNode();
+        if (activeNode) {
+          if (self._webAudio) {
+            activeNode.gain.value = vol;
+          } else {
+            activeNode.volume = vol * Howler.volume();
+          }
+        }
+
+        return self;
+      } else {
+        return self._volume;
+      }
+    },
+
+    /**
+     * Get/set whether to loop the sound.
+     * @param  {Boolean} loop To loop or not to loop, that is the question.
+     * @return {Howl/Boolean}      Returns self or current looping value.
+     */
+    loop: function(loop) {
+      var self = this;
+
+      if (typeof loop === 'boolean') {
+        self._loop = loop;
+
+        return self;
+      } else {
+        return self._loop;
+      }
+    },
+
+    /**
+     * Get/set sound sprite definition.
+     * @param  {Object} sprite Example: {spriteName: [offset, duration, loop]}
+     *                @param {Integer} offset   Where to begin playback in milliseconds
+     *                @param {Integer} duration How long to play in milliseconds
+     *                @param {Boolean} loop     (optional) Set true to loop this sprite
+     * @return {Howl}        Returns current sprite sheet or self.
+     */
+    sprite: function(sprite) {
+      var self = this;
+
+      if (typeof sprite === 'object') {
+        self._sprite = sprite;
+
+        return self;
+      } else {
+        return self._sprite;
+      }
+    },
+
+    /**
+     * Get/set the position of playback.
+     * @param  {Float}  pos The position to move current playback to.
+     * @param  {String} id  (optional) The play instance ID.
+     * @return {Howl/Float}      Returns self or current playback position.
+     */
+    pos: function(pos, id) {
+      var self = this;
+
+      // if the sound hasn't been loaded, add it to the event queue
+      if (!self._loaded) {
+        self.on('load', function() {
+          self.pos(pos);
+        });
+
+        return typeof pos === 'number' ? self : self._pos || 0;
+      }
+
+      // make sure we are dealing with a number for pos
+      pos = parseFloat(pos);
+
+      var activeNode = (id) ? self._nodeById(id) : self._activeNode();
+      if (activeNode) {
+        if (pos >= 0) {
+          self.pause(id);
+          activeNode._pos = pos;
+          self.play(activeNode._sprite, id);
+
+          return self;
+        } else {
+          return self._webAudio ? activeNode._pos + (ctx.currentTime - self._playStart) : activeNode.currentTime;
+        }
+      } else if (pos >= 0) {
+        return self;
+      } else {
+        // find the first inactive node to return the pos for
+        for (var i=0; i<self._audioNode.length; i++) {
+          if (self._audioNode[i].paused && self._audioNode[i].readyState === 4) {
+            return (self._webAudio) ? self._audioNode[i]._pos : self._audioNode[i].currentTime;
+          }
+        }
+      }
+    },
+
+    /**
+     * Get/set the 3D position of the audio source.
+     * The most common usage is to set the 'x' position
+     * to affect the left/right ear panning. Setting any value higher than
+     * 1.0 will begin to decrease the volume of the sound as it moves further away.
+     * NOTE: This only works with Web Audio API, HTML5 Audio playback
+     * will not be affected.
+     * @param  {Float}  x  The x-position of the playback from -1000.0 to 1000.0
+     * @param  {Float}  y  The y-position of the playback from -1000.0 to 1000.0
+     * @param  {Float}  z  The z-position of the playback from -1000.0 to 1000.0
+     * @param  {String} id (optional) The play instance ID.
+     * @return {Howl/Array}   Returns self or the current 3D position: [x, y, z]
+     */
+    pos3d: function(x, y, z, id) {
+      var self = this;
+
+      // set a default for the optional 'y' & 'z'
+      y = (typeof y === 'undefined' || !y) ? 0 : y;
+      z = (typeof z === 'undefined' || !z) ? -0.5 : z;
+
+      // if the sound hasn't been loaded, add it to the event queue
+      if (!self._loaded) {
+        self.on('play', function() {
+          self.pos3d(x, y, z, id);
+        });
+
+        return self;
+      }
+
+      if (x >= 0 || x < 0) {
+        if (self._webAudio) {
+          var activeNode = (id) ? self._nodeById(id) : self._activeNode();
+          if (activeNode) {
+            self._pos3d = [x, y, z];
+            activeNode.panner.setPosition(x, y, z);
+            activeNode.panner.panningModel = self._model || 'HRTF';
+          }
+        }
+      } else {
+        return self._pos3d;
+      }
+
+      return self;
+    },
+
+    /**
+     * Fade a currently playing sound between two volumes.
+     * @param  {Number}   from     The volume to fade from (0.0 to 1.0).
+     * @param  {Number}   to       The volume to fade to (0.0 to 1.0).
+     * @param  {Number}   len      Time in milliseconds to fade.
+     * @param  {Function} callback (optional) Fired when the fade is complete.
+     * @param  {String}   id       (optional) The play instance ID.
+     * @return {Howl}
+     */
+    fade: function(from, to, len, callback, id) {
+      var self = this,
+        diff = Math.abs(from - to),
+        dir = from > to ? 'down' : 'up',
+        steps = diff / 0.01,
+        stepTime = len / steps;
+
+      // if the sound hasn't been loaded, add it to the event queue
+      if (!self._loaded) {
+        self.on('load', function() {
+          self.fade(from, to, len, callback, id);
+        });
+
+        return self;
+      }
+
+      // set the volume to the start position
+      self.volume(from, id);
+
+      for (var i=1; i<=steps; i++) {
+        (function() {
+          var change = self._volume + (dir === 'up' ? 0.01 : -0.01) * i,
+            vol = Math.round(1000 * change) / 1000,
+            toVol = to;
+
+          setTimeout(function() {
+            self.volume(vol, id);
+
+            if (vol === toVol) {
+              if (callback) callback();
+            }
+          }, stepTime * i);
+        })();
+      }
+    },
+
+    /**
+     * [DEPRECATED] Fade in the current sound.
+     * @param  {Float}    to      Volume to fade to (0.0 to 1.0).
+     * @param  {Number}   len     Time in milliseconds to fade.
+     * @param  {Function} callback
+     * @return {Howl}
+     */
+    fadeIn: function(to, len, callback) {
+      return this.volume(0).play().fade(0, to, len, callback);
+    },
+
+    /**
+     * [DEPRECATED] Fade out the current sound and pause when finished.
+     * @param  {Float}    to       Volume to fade to (0.0 to 1.0).
+     * @param  {Number}   len      Time in milliseconds to fade.
+     * @param  {Function} callback
+     * @param  {String}   id       (optional) The play instance ID.
+     * @return {Howl}
+     */
+    fadeOut: function(to, len, callback, id) {
+      var self = this;
+
+      return self.fade(self._volume, to, len, function() {
+        if (callback) callback();
+        self.pause(id);
+
+        // fire ended event
+        self.on('end');
+      }, id);
+    },
+
+    /**
+     * Get an audio node by ID.
+     * @return {Howl} Audio node.
+     */
+    _nodeById: function(id) {
+      var self = this,
+        node = self._audioNode[0];
+
+      // find the node with this ID
+      for (var i=0; i<self._audioNode.length; i++) {
+        if (self._audioNode[i].id === id) {
+          node = self._audioNode[i];
+          break;
+        }
+      }
+
+      return node;
+    },
+
+    /**
+     * Get the first active audio node.
+     * @return {Howl} Audio node.
+     */
+    _activeNode: function() {
+      var self = this,
+        node = null;
+
+      // find the first playing node
+      for (var i=0; i<self._audioNode.length; i++) {
+        if (!self._audioNode[i].paused) {
+          node = self._audioNode[i];
+          break;
+        }
+      }
+
+      // remove excess inactive nodes
+      self._drainPool();
+
+      return node;
+    },
+
+    /**
+     * Get the first inactive audio node.
+     * If there is none, create a new one and add it to the pool.
+     * @param  {Function} callback Function to call when the audio node is ready.
+     */
+    _inactiveNode: function(callback) {
+      var self = this,
+        node = null;
+
+      // find first inactive node to recycle
+      for (var i=0; i<self._audioNode.length; i++) {
+        if (self._audioNode[i].paused && self._audioNode[i].readyState === 4) {
+          // send the node back for use by the new play instance
+          callback(self._audioNode[i]);
+          node = true;
+          break;
+        }
+      }
+
+      // remove excess inactive nodes
+      self._drainPool();
+
+      if (node) {
+        return;
+      }
+
+      // create new node if there are no inactives
+      var newNode;
+      if (self._webAudio) {
+        newNode = self._setupAudioNode();
+        callback(newNode);
+      } else {
+        self.load();
+        newNode = self._audioNode[self._audioNode.length - 1];
+
+        // listen for the correct load event and fire the callback
+        var listenerEvent = navigator.isCocoonJS ? 'canplaythrough' : 'loadedmetadata';
+        var listener = function() {
+          newNode.removeEventListener(listenerEvent, listener, false);
+          callback(newNode);
+        };
+        newNode.addEventListener(listenerEvent, listener, false);
+      }
+    },
+
+    /**
+     * If there are more than 5 inactive audio nodes in the pool, clear out the rest.
+     */
+    _drainPool: function() {
+      var self = this,
+        inactive = 0,
+        i;
+
+      // count the number of inactive nodes
+      for (i=0; i<self._audioNode.length; i++) {
+        if (self._audioNode[i].paused) {
+          inactive++;
+        }
+      }
+
+      // remove excess inactive nodes
+      for (i=self._audioNode.length-1; i>=0; i--) {
+        if (inactive <= 5) {
+          break;
+        }
+
+        if (self._audioNode[i].paused) {
+          // disconnect the audio source if using Web Audio
+          if (self._webAudio) {
+            self._audioNode[i].disconnect(0);
+          }
+
+          inactive--;
+          self._audioNode.splice(i, 1);
+        }
+      }
+    },
+
+    /**
+     * Clear 'onend' timeout before it ends.
+     * @param  {String} soundId  The play instance ID.
+     */
+    _clearEndTimer: function(soundId) {
+      var self = this,
+        index = 0;
+
+      // loop through the timers to find the one associated with this sound
+      for (var i=0; i<self._onendTimer.length; i++) {
+        if (self._onendTimer[i].id === soundId) {
+          index = i;
+          break;
+        }
+      }
+
+      var timer = self._onendTimer[index];
+      if (timer) {
+        clearTimeout(timer.timer);
+        self._onendTimer.splice(index, 1);
+      }
+    },
+
+    /**
+     * Setup the gain node and panner for a Web Audio instance.
+     * @return {Object} The new audio node.
+     */
+    _setupAudioNode: function() {
+      var self = this,
+        node = self._audioNode,
+        index = self._audioNode.length;
+
+      // create gain node
+      node[index] = (typeof ctx.createGain === 'undefined') ? ctx.createGainNode() : ctx.createGain();
+      node[index].gain.value = self._volume;
+      node[index].paused = true;
+      node[index]._pos = 0;
+      node[index].readyState = 4;
+      node[index].connect(masterGain);
+
+      // create the panner
+      node[index].panner = ctx.createPanner();
+      node[index].panner.panningModel = self._model || 'equalpower';
+      node[index].panner.setPosition(self._pos3d[0], self._pos3d[1], self._pos3d[2]);
+      node[index].panner.connect(node[index]);
+
+      return node[index];
+    },
+
+    /**
+     * Call/set custom events.
+     * @param  {String}   event Event type.
+     * @param  {Function} fn    Function to call.
+     * @return {Howl}
+     */
+    on: function(event, fn) {
+      var self = this,
+        events = self['_on' + event];
+
+      if (typeof fn === 'function') {
+        events.push(fn);
+      } else {
+        for (var i=0; i<events.length; i++) {
+          if (fn) {
+            events[i].call(self, fn);
+          } else {
+            events[i].call(self);
+          }
+        }
+      }
+
+      return self;
+    },
+
+    /**
+     * Remove a custom event.
+     * @param  {String}   event Event type.
+     * @param  {Function} fn    Listener to remove.
+     * @return {Howl}
+     */
+    off: function(event, fn) {
+      var self = this,
+        events = self['_on' + event],
+        fnString = fn ? fn.toString() : null;
+
+      if (fnString) {
+        // loop through functions in the event for comparison
+        for (var i=0; i<events.length; i++) {
+          if (fnString === events[i].toString()) {
+            events.splice(i, 1);
+            break;
+          }
+        }
+      } else {
+        self['_on' + event] = [];
+      }
+
+      return self;
+    },
+
+    /**
+     * Unload and destroy the current Howl object.
+     * This will immediately stop all play instances attached to this sound.
+     */
+    unload: function() {
+      var self = this;
+
+      // stop playing any active nodes
+      var nodes = self._audioNode;
+      for (var i=0; i<self._audioNode.length; i++) {
+        // stop the sound if it is currently playing
+        if (!nodes[i].paused) {
+          self.stop(nodes[i].id);
+          self.on('end', nodes[i].id);
+        }
+
+        if (!self._webAudio) {
+          // remove the source if using HTML5 Audio
+          nodes[i].src = '';
+        } else {
+          // disconnect the output from the master gain
+          nodes[i].disconnect(0);
+        }
+      }
+
+      // make sure all timeouts are cleared
+      for (i=0; i<self._onendTimer.length; i++) {
+        clearTimeout(self._onendTimer[i].timer);
+      }
+
+      // remove the reference in the global Howler object
+      var index = Howler._howls.indexOf(self);
+      if (index !== null && index >= 0) {
+        Howler._howls.splice(index, 1);
+      }
+
+      // delete this sound from the cache
+      delete cache[self._src];
+      self = null;
+    }
+
+  };
+
+  // only define these functions when using WebAudio
+  if (usingWebAudio) {
+
+    /**
+     * Buffer a sound from URL (or from cache) and decode to audio source (Web Audio API).
+     * @param  {Object} obj The Howl object for the sound to load.
+     * @param  {String} url The path to the sound file.
+     */
+    var loadBuffer = function(obj, url) {
+      // check if the buffer has already been cached
+      if (url in cache) {
+        // set the duration from the cache
+        obj._duration = cache[url].duration;
+
+        // load the sound into this object
+        loadSound(obj);
+        return;
+      }
+      
+      if (/^data:[^;]+;base64,/.test(url)) {
+        // Decode base64 data-URIs because some browsers cannot load data-URIs with XMLHttpRequest.
+        var data = atob(url.split(',')[1]);
+        var dataView = new Uint8Array(data.length);
+        for (var i=0; i<data.length; ++i) {
+          dataView[i] = data.charCodeAt(i);
+        }
+        
+        decodeAudioData(dataView.buffer, obj, url);
+      } else {
+        // load the buffer from the URL
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.responseType = 'arraybuffer';
+        xhr.onload = function() {
+          decodeAudioData(xhr.response, obj, url);
+        };
+        xhr.onerror = function() {
+          // if there is an error, switch the sound to HTML Audio
+          if (obj._webAudio) {
+            obj._buffer = true;
+            obj._webAudio = false;
+            obj._audioNode = [];
+            delete obj._gainNode;
+            delete cache[url];
+            obj.load();
+          }
+        };
+        try {
+          xhr.send();
+        } catch (e) {
+          xhr.onerror();
+        }
+      }
+    };
+
+    /**
+     * Decode audio data from an array buffer.
+     * @param  {ArrayBuffer} arraybuffer The audio data.
+     * @param  {Object} obj The Howl object for the sound to load.
+     * @param  {String} url The path to the sound file.
+     */
+    var decodeAudioData = function(arraybuffer, obj, url) {
+      // decode the buffer into an audio source
+      ctx.decodeAudioData(
+        arraybuffer,
+        function(buffer) {
+          if (buffer) {
+            cache[url] = buffer;
+            loadSound(obj, buffer);
+          }
+        },
+        function(err) {
+          obj.on('loaderror');
+        }
+      );
+    };
+
+    /**
+     * Finishes loading the Web Audio API sound and fires the loaded event
+     * @param  {Object}  obj    The Howl object for the sound to load.
+     * @param  {Objecct} buffer The decoded buffer sound source.
+     */
+    var loadSound = function(obj, buffer) {
+      // set the duration
+      obj._duration = (buffer) ? buffer.duration : obj._duration;
+
+      // setup a sprite if none is defined
+      if (Object.getOwnPropertyNames(obj._sprite).length === 0) {
+        obj._sprite = {_default: [0, obj._duration * 1000]};
+      }
+
+      // fire the loaded event
+      if (!obj._loaded) {
+        obj._loaded = true;
+        obj.on('load');
+      }
+
+      if (obj._autoplay) {
+        obj.play();
+      }
+    };
+
+    /**
+     * Load the sound back into the buffer source.
+     * @param  {Object} obj   The sound to load.
+     * @param  {Array}  loop  Loop boolean, pos, and duration.
+     * @param  {String} id    (optional) The play instance ID.
+     */
+    var refreshBuffer = function(obj, loop, id) {
+      // determine which node to connect to
+      var node = obj._nodeById(id);
+
+      // setup the buffer source for playback
+      node.bufferSource = ctx.createBufferSource();
+      node.bufferSource.buffer = cache[obj._src];
+      node.bufferSource.connect(node.panner);
+      node.bufferSource.loop = loop[0];
+      if (loop[0]) {
+        node.bufferSource.loopStart = loop[1];
+        node.bufferSource.loopEnd = loop[1] + loop[2];
+      }
+      node.bufferSource.playbackRate.value = obj._rate;
+    };
+
+  }
+
+  /**
+   * Add support for AMD (Asynchronous Module Definition) libraries such as require.js.
+   */
+  if (typeof define === 'function' && define.amd) {
+    define(function() {
+      return {
+        Howler: Howler,
+        Howl: Howl
+      };
+    });
+  }
+
+  /**
+   * Add support for CommonJS libraries such as browserify.
+   */
+  if (typeof exports !== 'undefined') {
+    exports.Howler = Howler;
+    exports.Howl = Howl;
+  }
+
+  // define globally in case AMD is not available or available but not used
+
+  if (typeof window !== 'undefined') {
+    window.Howler = Howler;
+    window.Howl = Howl;
+  }
+
+})();
+
 //     Underscore.js 1.7.0
 //     http://underscorejs.org
 //     (c) 2009-2014 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
@@ -1414,6 +2768,993 @@
   }
 }.call(this));
 
+var WebAudiox	= WebAudiox	|| {}
+
+WebAudiox.AbsoluteNormalizer	= function(){
+	var maxThreshold	= -Infinity;
+	var minThreshold	= +Infinity;
+	this.update	= function(value){
+		// TODO make be good to smooth those values over time, thus it would forget
+		// it would be the adaptative
+		// and this one being absolute
+		if( value < minThreshold ) minThreshold	= value
+		if( value > maxThreshold ) maxThreshold = value
+		// to avoid division by zero
+		if( maxThreshold === minThreshold )	return value;
+		// compute normalized value
+		var normalized	= (value - minThreshold) / (maxThreshold-minThreshold);
+		// return the just built normalized value between [0, 1]
+		return normalized;
+	}
+}
+
+
+var WebAudiox	= WebAudiox	|| {}
+
+// TODO to rewrite with a simple weight average on a history array
+// - simple and no magic involved
+
+WebAudiox.AdaptativeNormalizer	= function(factorForMin, factorForMax){
+	var minThreshold	= 0;
+	var maxThreshold	= 1;
+	this.update	= function(value){
+		// smooth adapatation
+		var smoothOut	= 0.01
+		var smoothIn	= 0.01
+		if( value < minThreshold )	minThreshold += (value-minThreshold)*smoothOut
+		else				minThreshold += (value-minThreshold)*smoothIn
+		if( value > maxThreshold )	maxThreshold += (value-maxThreshold)*smoothOut
+		else				maxThreshold += (value-maxThreshold)*smoothIn
+		// ensure bound are respected
+		if( value < minThreshold ) value = minThreshold
+		if( value > maxThreshold ) value = maxThreshold
+		// to avoid division by zero
+		if( maxThreshold === minThreshold )	return value;
+		// compute normalized value
+console.log(minThreshold.toFixed(10),maxThreshold.toFixed(10))
+		var normalized	= (value - minThreshold) / (maxThreshold-minThreshold);
+		// return the just built normalized value between [0, 1]
+		return normalized;
+	}
+}
+
+// @namespace defined WebAudiox name space
+var WebAudiox	= WebAudiox	|| {}
+
+/**
+ * display an analyser node in a canvas
+ * 
+ * @param  {AnalyserNode} analyser     the analyser node
+ * @param  {Number}	smoothFactor the smooth factor for smoothed volume
+ */
+WebAudiox.Analyser2Volume	= function(analyser, smoothFactor){
+	// arguments default values
+	smoothFactor	= smoothFactor !== undefined ? smoothFactor : 0.1
+	/**
+	 * return the raw volume
+	 * @return {Number} value between 0 and 1
+	 */
+	this.rawValue		= function(){
+		var rawVolume	= WebAudiox.Analyser2Volume.compute(analyser)
+		return rawVolume
+	}
+	
+	var smoothedVolume	= null
+	/**
+	 * [smoothedValue description]
+	 * @return {[type]} [description]
+	 */
+	this.smoothedValue	= function(){
+		var rawVolume	= WebAudiox.Analyser2Volume.compute(analyser)
+		// compute smoothedVolume
+		if( smoothedVolume === null )	smoothedVolume	= rawVolume
+		smoothedVolume	+= (rawVolume  - smoothedVolume) * smoothFactor		
+		// return the just computed value
+		return smoothedVolume
+	}
+}
+
+/**
+ * do a average on a ByteFrequencyData from an analyser node
+ * @param  {AnalyserNode} analyser the analyser node
+ * @param  {Number} width    how many elements of the array will be considered
+ * @param  {Number} offset   the index of the element to consider
+ * @return {Number}          the ByteFrequency average
+ */
+WebAudiox.Analyser2Volume.compute	= function(analyser, width, offset){
+	// handle paramerter
+	width		= width  !== undefined ? width	: analyser.frequencyBinCount;
+	offset		= offset !== undefined ? offset	: 0;
+	// inint variable
+	var freqByte	= new Uint8Array(analyser.frequencyBinCount);
+	// get the frequency data
+	analyser.getByteFrequencyData(freqByte);
+	// compute the sum
+	var sum	= 0;
+	for(var i = offset; i < offset+width; i++){
+		sum	+= freqByte[i];
+	}
+	// complute the amplitude
+	var amplitude	= sum / (width*256-1);
+	// return ampliture
+	return amplitude;
+}
+
+var WebAudiox	= WebAudiox	|| {}
+
+/**
+ * Generate a binaural sounds
+ * http://htmlpreview.github.io/?https://github.com/ichabodcole/BinauralBeatJS/blob/master/examples/index.html
+ * http://en.wikipedia.org/wiki/Binaural_beats
+ * 
+ * @param {Number} pitch    the frequency of the pitch (e.g. 440hz)
+ * @param {Number} beatRate the beat rate of the binaural sound (e.g. around 2-10hz)
+ * @param {Number} gain     the gain applied on the result
+ */
+WebAudiox.BinauralSource	= function(context, pitch, beatRate, gain){
+	pitch	= pitch !== undefined ? pitch : 440
+	beatRate= beatRate !== undefined ? beatRate : 5
+	gain	= gain !== undefined ? gain : 1
+
+	var gainNode	= context.createGain()
+	this.output	= gainNode
+	var destination	= gainNode
+	
+	var compressor	= context.createDynamicsCompressor();
+	compressor.connect(destination)
+	destination	= compressor
+
+	var channelMerge= context.createChannelMerger()
+	channelMerge.connect(destination)
+	destination	= channelMerge
+	
+	var leftOscil	= context.createOscillator()
+	leftOscil.connect(destination)
+
+	var rightOscil	= context.createOscillator()
+	rightOscil.connect(destination)
+	
+	var updateNodes	= function(){
+		gainNode.gain.value		= gain
+		leftOscil.frequency.value	= pitch - beatRate/2
+		rightOscil.frequency.value	= pitch + beatRate/2	
+	}
+	// do the initial update
+	updateNodes();
+
+	this.getGain	= function(){
+		return gain
+	}
+	this.setGain	= function(value){
+		gain	= value
+		updateNodes();		
+	}
+	this.getPitch	= function(){
+		return pitch
+	}
+	this.setPitch	= function(value){
+		pitch	= value
+		updateNodes();		
+	}
+	this.getBeatRate= function(){
+		return beatRate
+	}
+	this.setBeatRate= function(value){
+		beatRate	= value
+		updateNodes();		
+	}
+	/**
+	 * start the source
+	 */
+	this.start	= function(delay){
+		delay	= delay !== undefined ? delay : 0
+		leftOscil.start(delay)
+		rightOscil.start(delay)
+	}
+	/** 
+	 * stop the source
+	 */
+	this.stop	= function(delay){
+		delay	= delay !== undefined ? delay : 0
+		leftOscil.stop(delay)
+		rightOscil.stop(delay)
+	}
+}
+var WebAudiox	= WebAudiox	|| {}
+
+
+/**
+ * source is integers from 0 to 255,  destination is float from 0 to 1 non included
+ * source and destination may not have the same length.
+ * 
+ * @param {Array} srcArray       the source array
+ * @param {Array} dstArray       the destination array
+ * @param {Number|undefined} dstArrayLength the length of the destination array. If not provided
+ *                               dstArray.length value is used.
+ */
+WebAudiox.ByteToNormalizedFloat32Array	= function(srcArray, dstArray, dstArrayLength){
+	dstArrayLength	= dstArrayLength !== undefined ? dstArrayLength : dstArray.length
+	var ratio	= srcArray.length / dstArrayLength
+	for(var i = 0; i < dstArray.length; i++){
+		var first	= Math.round((i+0) * ratio)
+		var last	= Math.round((i+1) * ratio)
+		last		= Math.min(srcArray.length-1, last)
+		for(var j = first, sum = 0; j <= last; j++){
+			sum	+= srcArray[j]/256;
+		}
+		dstArray[i]	= sum/(last-first+1);
+	}
+}
+var WebAudiox	= WebAudiox	|| {}
+
+/**
+ * generate buffer with jsfx.js 
+ * @param  {AudioContext} context the WebAudio API context
+ * @param  {Array} lib     parameter for jsfx
+ * @return {[type]}         the just built buffer
+ */
+WebAudiox.getBufferFromJsfx	= function(context, lib){
+	var params	= jsfxlib.arrayToParams(lib);
+	var data	= jsfx.generate(params);
+	var buffer	= context.createBuffer(1, data.length, 44100);
+	var fArray	= buffer.getChannelData(0);
+	for(var i = 0; i < fArray.length; i++){
+		fArray[i]	= data[i];
+	}
+	return buffer;
+}
+/**
+ * @namespace definition of WebAudiox
+ * @type {object}
+ */
+var WebAudiox	= WebAudiox	|| {}
+
+/**
+ * definition of a lineOut
+ * @constructor
+ * @param  {AudioContext} context WebAudio API context
+ */
+WebAudiox.LineOut	= function(context){
+	// init this.destination
+	this.destination= context.destination
+
+	// this.destination to support muteWithVisibility
+	var visibilityGain	= context.createGain()
+	visibilityGain.connect(this.destination)			
+	muteWithVisibility(visibilityGain)
+	this.destination= visibilityGain
+
+	// this.destination to support webAudiox.toggleMute() and webAudiox.isMuted
+	var muteGain	= context.createGain()
+	muteGain.connect(this.destination)
+	this.destination= muteGain
+	this.isMuted	= false
+	this.toggleMute = function(){
+		this.isMuted		= this.isMuted ? false : true;
+		muteGain.gain.value	= this.isMuted ? 0 : 1;
+	}.bind(this)
+
+	//  to support webAudiox.volume
+	var volumeNode	= context.createGain()
+	volumeNode.connect( this.destination )	
+	this.destination= volumeNode
+	Object.defineProperty(this, 'volume', {
+		get : function(){
+			return volumeNode.gain.value; 
+		},
+                set : function(value){
+			volumeNode.gain.value	= value;
+		}
+	});
+
+	return;	
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		muteWithVisibility helper					//
+	//////////////////////////////////////////////////////////////////////////////////
+	/**
+	 * mute a gainNode when the page isnt visible
+	 * @param  {Node} gainNode the gainNode to mute/unmute
+	 */
+	function muteWithVisibility(gainNode){
+		// shim to handle browser vendor
+		var eventStr	= (document.hidden !== undefined	? 'visibilitychange'	:
+			(document.mozHidden	!== undefined		? 'mozvisibilitychange'	:
+			(document.msHidden	!== undefined		? 'msvisibilitychange'	:
+			(document.webkitHidden	!== undefined		? 'webkitvisibilitychange' :
+			console.assert(false, "Page Visibility API unsupported")
+		))));
+		var documentStr	= (document.hidden !== undefined ? 'hidden' :
+			(document.mozHidden	!== undefined ? 'mozHidden' :
+			(document.msHidden	!== undefined ? 'msHidden' :
+			(document.webkitHidden	!== undefined ? 'webkitHidden' :
+			console.assert(false, "Page Visibility API unsupported")
+		))));
+		// event handler for visibilitychange event
+		var callback	= function(){
+			var isHidden	= document[documentStr] ? true : false
+			gainNode.gain.value	= isHidden ? 0 : 1
+		}.bind(this)
+		// bind the event itself
+		document.addEventListener(eventStr, callback, false)
+		// destructor
+		this.destroy	= function(){
+			document.removeEventListener(eventStr, callback, false)
+		}
+	}
+}
+var WebAudiox	= WebAudiox	|| {}
+
+/**
+ * Helper to load a buffer
+ * 
+ * @param  {AudioContext} context the WebAudio API context
+ * @param  {String} url     the url of the sound to load
+ * @param  {Function} onLoad  callback to notify when the buffer is loaded and decoded
+ * @param  {Function} onError callback to notify when an error occured
+ */
+WebAudiox.loadBuffer	= function(context, url, onLoad, onError){
+	onLoad		= onLoad	|| function(buffer){}
+	onError		= onError	|| function(){}
+        if( url instanceof Blob ){
+		var request	= new FileReader();
+        } else {
+		var request	= new XMLHttpRequest()
+		request.open('GET', url, true)
+		request.responseType	= 'arraybuffer'
+        }
+	// counter inProgress request
+	WebAudiox.loadBuffer.inProgressCount++
+	request.onload	= function(){
+		context.decodeAudioData(request.response, function(buffer){
+			// counter inProgress request
+			WebAudiox.loadBuffer.inProgressCount--
+			// notify the callback
+			onLoad(buffer)			
+			// notify
+			WebAudiox.loadBuffer.onLoad(context, url, buffer)
+		}, function(){
+			// notify the callback
+			onError()
+			// counter inProgress request
+			WebAudiox.loadBuffer.inProgressCount--
+		})
+	}
+	request.send()
+}
+
+/**
+ * global onLoad callback. it is notified everytime .loadBuffer() load something
+ * @param  {AudioContext} context the WebAudio API context
+ * @param  {String} url     the url of the sound to load
+ * @param {[type]} buffer the just loaded buffer
+ */
+WebAudiox.loadBuffer.onLoad	= function(context, url, buffer){}
+
+/**
+ * counter of all the .loadBuffer in progress. usefull to know is all your sounds
+ * as been loaded
+ * @type {Number}
+ */
+WebAudiox.loadBuffer.inProgressCount	= 0
+
+
+
+/**
+ * shim to get AudioContext
+ */
+window.AudioContext	= window.AudioContext || window.webkitAudioContext;
+// @namespace
+var WebAudiox	= WebAudiox	|| {}
+
+//////////////////////////////////////////////////////////////////////////////////
+//		for Listener							//
+//////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * Set Position of the listener based on THREE.Vector3  
+ * 
+ * @param  {AudioContext} context  the webaudio api context
+ * @param {THREE.Vector3} position the position to use
+ */
+WebAudiox.ListenerSetPosition	= function(context, position){
+	context.listener.setPosition(position.x, position.y, position.z)
+}
+
+/**
+ * Set Position and Orientation of the listener based on object3d  
+ * 
+ * @param {[type]} panner   the panner node
+ * @param {THREE.Object3D} object3d the object3d to use
+ */
+WebAudiox.ListenerSetObject3D	= function(context, object3d){
+	// ensure object3d.matrixWorld is up to date
+	object3d.updateMatrixWorld()
+	// get matrixWorld
+	var matrixWorld	= object3d.matrixWorld
+	////////////////////////////////////////////////////////////////////////
+	// set position
+	var position	= new THREE.Vector3().getPositionFromMatrix(matrixWorld)
+	context.listener.setPosition(position.x, position.y, position.z)
+
+	////////////////////////////////////////////////////////////////////////
+	// set orientation
+	var mOrientation= matrixWorld.clone();
+	// zero the translation
+	mOrientation.setPosition({x : 0, y: 0, z: 0});
+	// Compute Front vector: Multiply the 0,0,1 vector by the world matrix and normalize the result.
+	var vFront= new THREE.Vector3(0,0,1);
+	vFront.applyMatrix4(mOrientation)
+	vFront.normalize();
+	// Compute UP vector: Multiply the 0,-1,0 vector by the world matrix and normalize the result.
+	var vUp= new THREE.Vector3(0,-1, 0);
+	vUp.applyMatrix4(mOrientation)
+	vUp.normalize();
+	// Set panner orientation
+	context.listener.setOrientation(vFront.x, vFront.y, vFront.z, vUp.x, vUp.y, vUp.z);
+}
+
+/**
+ * update webaudio context listener with three.Object3D position
+ * 
+ * @constructor
+ * @param  {AudioContext} context  the webaudio api context
+ * @param  {THREE.Object3D} object3d the object for the listenre
+ */
+WebAudiox.ListenerObject3DUpdater	= function(context, object3d){	
+	var prevPosition= null
+	this.update	= function(delta){
+		// update the position/orientation
+		WebAudiox.ListenerSetObject3D(context, object3d)
+
+		////////////////////////////////////////////////////////////////////////
+		// set velocity
+		var matrixWorld	= object3d.matrixWorld
+		if( prevPosition === null ){
+			prevPosition	= new THREE.Vector3().getPositionFromMatrix(matrixWorld);
+		}else{
+			var position	= new THREE.Vector3().getPositionFromMatrix(matrixWorld);
+			var velocity	= position.clone().sub(prevPosition).divideScalar(delta);
+			prevPosition.copy(position)
+			context.listener.setVelocity(velocity.x, velocity.y, velocity.z);
+		}
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////
+//		for Panner							//
+//////////////////////////////////////////////////////////////////////////////////
+
+
+/**
+ * Set Position of the panner node based on THREE.Vector3  
+ * 
+ * @param {[type]} panner   the panner node
+ * @param {THREE.Vector3} position the position to use
+ */
+WebAudiox.PannerSetPosition	= function(panner, position){
+	panner.setPosition(position.x, position.y, position.z)
+}
+
+/**
+ * Set Position and Orientation of the panner node based on object3d  
+ * 
+ * @param {[type]} panner   the panner node
+ * @param {THREE.Object3D} object3d the object3d to use
+ */
+WebAudiox.PannerSetObject3D	= function(panner, object3d){
+	// ensure object3d.matrixWorld is up to date
+	object3d.updateMatrixWorld()
+	// get matrixWorld
+	var matrixWorld	= object3d.matrixWorld
+	
+	////////////////////////////////////////////////////////////////////////
+	// set position
+	var position	= new THREE.Vector3().getPositionFromMatrix(matrixWorld)
+	panner.setPosition(position.x, position.y, position.z)
+
+	////////////////////////////////////////////////////////////////////////
+	// set orientation
+	var vOrientation= new THREE.Vector3(0,0,1);
+	var mOrientation= matrixWorld.clone();
+	// zero the translation
+	mOrientation.setPosition({x : 0, y: 0, z: 0});
+	// Multiply the 0,0,1 vector by the world matrix and normalize the result.
+	vOrientation.applyMatrix4(mOrientation)
+	vOrientation.normalize();
+	// Set panner orientation
+	panner.setOrientation(vOrientation.x, vOrientation.y, vOrientation.z);
+}
+
+/**
+ * update panner position based on a object3d position
+ * 
+ * @constructor
+ * @param  {[type]} panner   the panner node to update
+ * @param  {THREE.Object3D} object3d the object from which we take the position
+ */
+WebAudiox.PannerObject3DUpdater	= function(panner, object3d){
+	var prevPosition= null
+	// set the initial position
+	WebAudiox.PannerSetObject3D(panner, object3d)
+	// the update function
+	this.update	= function(delta){
+		// update the position/orientation
+		WebAudiox.PannerSetObject3D(panner, object3d)
+
+		////////////////////////////////////////////////////////////////////////
+		// set velocity
+		var matrixWorld	= object3d.matrixWorld
+		if( prevPosition === null ){
+			prevPosition	= new THREE.Vector3().getPositionFromMatrix(matrixWorld);
+		}else{
+			var position	= new THREE.Vector3().getPositionFromMatrix(matrixWorld);
+			var velocity	= position.clone().sub(prevPosition).divideScalar(delta);
+			prevPosition.copy( position )
+			panner.setVelocity(velocity.x, velocity.y, velocity.z);
+		}
+	}
+}
+
+// @namespace defined WebAudiox namespace
+var WebAudiox	= WebAudiox	|| {}
+
+/**
+ * display an analyser node in a canvas
+ * 
+ * @param  {AnalyserNode} analyser     the analyser node
+ * @param  {Number}	  smoothFactor the smooth factor for smoothed volume
+ */
+WebAudiox.Analyser2Canvas	= function(analyser, canvas){
+	var canvasCtx		= canvas.getContext("2d")
+
+	var gradient	= canvasCtx.createLinearGradient(0,0,0,canvas.height)
+	gradient.addColorStop(1.00,'#000000')
+	gradient.addColorStop(0.75,'#ff0000')
+	gradient.addColorStop(0.25,'#ffff00')
+	gradient.addColorStop(0.00,'#ffffff')
+	canvasCtx.fillStyle	= gradient
+	
+	canvasCtx.lineWidth	= 5;
+	canvasCtx.strokeStyle	= "rgb(255, 255, 255)";
+
+	var analyser2volume	= new WebAudiox.Analyser2Volume(analyser)
+	
+	this.update	= function(){
+		//////////////////////////////////////////////////////////////////////////////////
+		//		comment								//
+		//////////////////////////////////////////////////////////////////////////////////
+
+		// draw a circle
+		var maxRadius	= Math.min(canvas.height, canvas.width) * 0.3
+		var radius	= 1 + analyser2volume.rawValue() * maxRadius;
+		canvasCtx.beginPath()
+		canvasCtx.arc(canvas.width*1.5/2, canvas.height*0.5/2, radius, 0, Math.PI*2, true)
+		canvasCtx.closePath()
+		canvasCtx.fill()
+		
+		// draw a circle
+		var radius	= 1 + analyser2volume.smoothedValue() * maxRadius
+		canvasCtx.beginPath()
+		canvasCtx.arc(canvas.width*1.5/2, canvas.height*0.5/2, radius, 0, Math.PI*2, true)
+		canvasCtx.closePath()
+		canvasCtx.stroke()
+
+		//////////////////////////////////////////////////////////////////////////////////
+		//		display	ByteFrequencyData					//
+		//////////////////////////////////////////////////////////////////////////////////
+
+		// get the average for the first channel
+		var freqData	= new Uint8Array(analyser.frequencyBinCount)
+		analyser.getByteFrequencyData(freqData)
+		// normalized
+		var histogram	= new Float32Array(10)
+		WebAudiox.ByteToNormalizedFloat32Array(freqData, histogram)
+		// draw the spectrum
+		var barStep	= canvas.width / (histogram.length-1)
+		var barWidth	= barStep*0.8
+		canvasCtx.fillStyle	= gradient
+		for(var i = 0; i < histogram.length; i++){
+			canvasCtx.fillRect(i*barStep, (1-histogram[i])*canvas.height, barWidth, canvas.height)
+		}
+		
+		//////////////////////////////////////////////////////////////////////////////////
+		//		display ByteTimeDomainData					//
+		//////////////////////////////////////////////////////////////////////////////////
+		
+		canvasCtx.lineWidth	= 5;
+		canvasCtx.strokeStyle = "rgb(255, 255, 255)";
+		// get the average for the first channel
+		var timeData	= new Uint8Array(analyser.fftSize)
+		analyser.getByteTimeDomainData(timeData)
+		// normalized
+		var histogram	= new Float32Array(60)
+		WebAudiox.ByteToNormalizedFloat32Array(timeData, histogram)
+		// amplify the histogram
+		for(var i = 0; i < histogram.length; i++) {
+			histogram[i]	= (histogram[i]-0.5)*1.5+0.5
+		}
+		// draw the spectrum		
+		var barStep	= canvas.width / (histogram.length-1)
+		canvasCtx.beginPath()
+		for(var i = 0; i < histogram.length; i++) {
+			histogram[i]	= (histogram[i]-0.5)*1.5+0.5
+			canvasCtx.lineTo(i*barStep, (1-histogram[i])*canvas.height)
+		}
+		canvasCtx.stroke()
+	}	
+}
+// @namespace defined WebAudiox namespace
+var WebAudiox	= WebAudiox	|| {}
+
+/**
+ * display an analyser node in a canvas
+ * * See http://www.airtightinteractive.com/2013/10/making-audio-reactive-visuals/
+ * 
+ * @param  {AnalyserNode} analyser     the analyser node
+ * @param  {Number}	  smoothFactor the smooth factor for smoothed volume
+ */
+WebAudiox.AnalyserBeatDetector	= function(analyser, onBeat){
+	// arguments default values
+	this.holdTime		= 0.33
+	this.decayRate		= 0.97
+	this.minVolume		= 0.2
+	this.frequencyBinCount	= 100
+
+	var holdingTime	= 0
+	var threshold	= this.minVolume
+	this.update	= function(delta){
+		var rawVolume	= WebAudiox.AnalyserBeatDetector.compute(analyser, this.frequencyBinCount)
+		if( holdingTime > 0 ){
+			holdingTime	-= delta
+			holdingTime	= Math.max(holdingTime, 0)
+		}else if( rawVolume > threshold ){
+			onBeat()
+			holdingTime	= this.holdTime;
+			threshold	= rawVolume * 1.1;
+			threshold	= Math.max(threshold, this.minVolume);	
+		}else{
+			threshold	*= this.decayRate;
+			threshold	= Math.max(threshold, this.minVolume);	
+		}
+	}
+}
+
+/**
+ * do a average on a ByteFrequencyData from an analyser node
+ * @param  {AnalyserNode} analyser the analyser node
+ * @param  {Number} width    how many elements of the array will be considered
+ * @param  {Number} offset   the index of the element to consider
+ * @return {Number}          the ByteFrequency average
+ */
+WebAudiox.AnalyserBeatDetector.compute	= function(analyser, width, offset){
+	// handle paramerter
+	width		= width  !== undefined ? width	: analyser.frequencyBinCount;
+	offset		= offset !== undefined ? offset	: 0;
+	// inint variable
+	var freqByte	= new Uint8Array(analyser.frequencyBinCount);
+	// get the frequency data
+	analyser.getByteFrequencyData(freqByte);
+	// compute the sum
+	var sum	= 0;
+	for(var i = offset; i < offset+width; i++){
+		sum	+= freqByte[i];
+	}
+	// complute the amplitude
+	var amplitude	= sum / (width*256-1);
+	// return ampliture
+	return amplitude;
+}
+
+
+// @namespace defined WebAudiox namespace
+var WebAudiox	= WebAudiox	|| {}
+
+
+WebAudiox.addAnalyserBeatDetectorDatGui	= function(beatDetector, datGui){
+	datGui		= datGui || new dat.GUI()
+	
+	var folder	= datGui.addFolder('Beat Detector');
+	folder.add(beatDetector, 'holdTime'		, 0.0, 4)
+	folder.add(beatDetector, 'decayRate'		, 0.1, 1.0)
+	folder.add(beatDetector, 'minVolume'		, 0.0, 1.0)
+	folder.add(beatDetector, 'frequencyBinCount'	, 1, 1024).step(1)
+	folder.open();
+}/**
+ * @namespace
+ */
+var WebAudiox	= WebAudiox	|| {}
+
+
+//////////////////////////////////////////////////////////////////////////////////
+//		WebAudiox.GameSounds
+//////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * a specific helpers for gamedevs to make WebAudio API easy to use for their case
+ */
+WebAudiox.GameSounds	= function(){
+	// create WebAudio API context
+	var context	= new AudioContext()
+	this.context	= context
+
+	// Create lineOut
+	var lineOut	= new WebAudiox.LineOut(context)
+	this.lineOut	= lineOut
+	
+	var clips	= {}
+	this.clips	= clips
+	
+	/**
+	 * show if the Web Audio API is detected or not
+	 * 
+	 * @type {boolean}
+	 */
+	this.webAudioDetected	= AudioContext ? true : false
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		update loop							//
+	//////////////////////////////////////////////////////////////////////////////////
+
+	/**
+	 * the update function
+	 * 
+	 * @param  {Number} delta seconds since the last iteration
+	 */
+	this.update	= function(delta){
+		// update each clips
+		Object.keys(clips).forEach(function(label){
+			var sound	= clips[label]
+			sound.update(delta)
+		})
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		create Sound							//
+	//////////////////////////////////////////////////////////////////////////////////
+			
+	/**
+	 * create a sound from this context
+	 * @param  {Object} options the default option for this sound, optional
+	 * @return {WebAudiox.GameSound}	the created sound
+	 */
+	this.createClip	= function(options){
+		return new WebAudiox.GameSoundClip(this, options)
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////
+//		WebAudiox.GameSoundListener
+//////////////////////////////////////////////////////////////////////////////////
+
+
+WebAudiox.GameSoundListener	= function(gameSounds){
+	var context		= gameSounds.context
+	this.listenerUpdater	= null
+	//////////////////////////////////////////////////////////////////////////////////
+	//		update loop							//
+	//////////////////////////////////////////////////////////////////////////////////
+	
+	/**
+	 * the update function
+	 * 
+	 * @param  {Number} delta seconds since the last iteration
+	 */
+	this.update	= function(delta){
+		if( this.listenerUpdater ){
+			this.listenerUpdater.update(delta)
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		handle .at
+	//////////////////////////////////////////////////////////////////////////////////
+	/**
+	 * Set the listener position
+	 * @param  {THREE.Vector3|THREE.Object3D} position the position to copy
+	 * @return {WebAudiox.GameSounds} the object itself for linked API
+	 */
+	this.at	= function(position){
+		if( position instanceof THREE.Vector3 ){
+			WebAudiox.ListenerSetPosition(context, position)	
+		}else if( position instanceof THREE.Object3D ){
+			WebAudiox.ListenerSetObject3D(context, position)	
+		}else	console.assert(false)
+		return this
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		handle .follow/.unFollow					//
+	//////////////////////////////////////////////////////////////////////////////////
+	
+	/**
+	 * Make the listener follow a three.js THREE.Object3D
+	 * 
+	 * @param  {THREE.Object3D} object3d the object to follow
+	 * @return {WebAudiox.GameSounds} the object itself for linked API
+	 */
+	this.startFollow= function(object3d){
+		// put a ListenerObject3DUpdater
+		this.listenerUpdater	= new WebAudiox.ListenerObject3DUpdater(context, object3d)
+		return this
+	}
+	
+	/**
+	 * Make the listener Stop Following the object 
+	 * @return {WebAudiox.GameSounds} the object itself for linked API
+	 */
+	this.stopFollow	= function(){
+		context.listener.setVelocity(0,0,0);
+		this.listenerUpdater	= null	
+		return this
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////
+//		WebAudiox.GameSoundClip
+//////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * a sound from WebAudiox.GameSounds
+ * @param {WebAudiox.GameSounds} gameSounds     
+ * @param {Object} defaultOptions the default play options
+ */
+WebAudiox.GameSoundClip	= function(gameSounds, defaultOptions){
+	this.gameSounds		= gameSounds	|| console.assert(false)
+	this.defaultOptions	= defaultOptions|| {}
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		register/unregister in gameSound				//
+	//////////////////////////////////////////////////////////////////////////////////
+		
+	this.label	= null;	
+	this.register	= function(label){
+		console.assert(gameSounds.clips[label] === undefined, 'label already defined')
+		gameSounds.clips[label]	= this
+		return this;
+	}
+	this.unregister	= function(){
+		if( this.label === null )	return;
+		delete gameSounds.clips[label]
+		return this;
+	}
+	
+	//////////////////////////////////////////////////////////////////////////////////
+	//		update loop							//
+	//////////////////////////////////////////////////////////////////////////////////
+	
+	var updateFcts	= []
+	this.update	= function(delta){
+		updateFcts.forEach(function(updateFct){
+			updateFct(delta)
+		})
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		load url							//
+	//////////////////////////////////////////////////////////////////////////////////
+	
+	this.load	= function(url, onLoad, onError){
+		this.loaded	= false
+		this.buffer	= null
+		WebAudiox.loadBuffer(gameSounds.context, url, function(decodedBuffer){
+			this.loaded	= true
+			this.buffer	= decodedBuffer;
+			onLoad	&& onLoad(this)
+		}.bind(this), onError)
+		return this
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//		createSource
+	//////////////////////////////////////////////////////////////////////////////////	
+
+	this.createSource	= function(opts){
+		opts		= opts	|| {}
+		var dfl		= this.defaultOptions
+		var options	= {
+			at	: opts.at !== undefined		? opts.at 	: dfl.at,
+			follow	: opts.follow !== undefined	? opts.follow	: dfl.follow,
+			volume	: opts.volume !== undefined 	? opts.volume	: dfl.volume,
+			loop	: opts.loop !== undefined	? opts.loop	: dfl.loop,
+		}
+		var gameSource	= new WebAudiox.GameSoundSource(this, opts)
+		return gameSource;
+	}
+	this.play	= function(opts){
+		return this.createSource(opts).play()
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////
+//		WebAudiox.GameSoundSource
+//////////////////////////////////////////////////////////////////////////////////
+
+WebAudiox.GameSoundSource = function(gameSound, options) {
+	options		= options	|| {}
+	var utterance	= this
+	var gameSounds	= gameSound.gameSounds
+	var context	= gameSounds.context
+	var destination	= gameSounds.lineOut.destination;
+
+	// honor .at: vector3
+	if( options.at !== undefined ){
+		// init AudioPannerNode if needed
+		if( utterance.pannerNode === undefined ){
+			var panner	= context.createPanner()
+			panner.connect(destination)
+			utterance.pannerNode	= panner
+			destination		= panner				
+		}
+		// set the value
+		if( options.at instanceof THREE.Vector3 ){
+			WebAudiox.PannerSetPosition(panner, options.at)			
+		}else if( options.at instanceof THREE.Object3D ){
+			WebAudiox.PannerSetObject3D(panner, options.at.position)			
+		}else	console.assert(false, 'invalid type for .at')
+	}
+
+	// honor .follow: mesh
+	if( options.follow !== undefined ){
+		// init AudioPannerNode if needed
+		if( utterance.pannerNode === undefined ){
+			var panner	= context.createPanner()
+			panner.connect(destination)
+			utterance.pannerNode	= panner
+			destination		= panner				
+		}
+		// put a PannerObject3DUpdater
+		var pannerUpdater	= new WebAudiox.PannerObject3DUpdater(panner, options.follow)
+		utterance.pannerUpdater	= pannerUpdater
+		utterance.stopFollow	= function(){
+			updateFcts.splice(updateFcts.indexOf(updatePannerUpdater), 1)
+			delete	utterance.pannerUpdater
+		}
+		function updatePannerUpdater(delta, now){
+			pannerUpdater.update(delta, now)
+		}			
+		updateFcts.push(updatePannerUpdater)
+	}
+
+	// honor .volume = 0.3
+	if( options.volume !== undefined ){
+		var gain	= context.createGain();
+		gain.gain.value	= options.volume
+		gain.connect(destination)
+		destination	= gain			
+		utterance.gainNode	= gain
+	}
+
+	// init AudioBufferSourceNode
+	var source	= context.createBufferSource()
+	source.buffer	= gameSound.buffer
+	source.connect(destination)
+	destination	= source
+
+	if( options.loop !== undefined )	source.loop	= options.loop
+	utterance.sourceNode	= source
+
+	// start the sound now
+	utterance.play	= function(delay){
+		delay	= delay !== undefined ? delay : 0		
+		source.start(delay)
+		return this
+	}
+
+	utterance.stop		= function(delay){
+		delay	= delay !== undefined ? delay : 0		
+		source.stop(delay)
+		// TODO What if the sound is never stopped ? 
+		// - the list of function will grow in the loop
+		// - do a setTimeout with a estimation of duration ?
+		if( this.stopFollow )	this.stopFollow()
+		return this
+	}
+};
+
 
 var Canvas = function(game, element) {
 	this.element = element; 
@@ -1528,8 +3869,6 @@ CanvasImage.prototype.loaded = function() {
 
 	this.replaceColors(); 
 
-	console.log(hexToRGB(0x363D35));
-
 	if (this.debug) {
 		document.body.appendChild(this.canvas);
 	}
@@ -1542,7 +3881,6 @@ CanvasImage.prototype.drawable = function() {
 CanvasImage.prototype.replaceColors = function() {
 
 	if (this.translateColors) {
-	console.log(this.translateColors);			
 
 		var imageData = this.c.getImageData(0, 0, this.canvas.width, this.canvas.height);
 		var data = imageData.data; 
@@ -1577,22 +3915,70 @@ var Fish = function(canvas) {
 
 	this.canvas = canvas; 
 
+	// We determine the fish size by how many fish you've killed
+	this.fishSize = Fish.fishKilled >= fishBeforeLevel2 ? 2 : 1; 
+
 	// Spawn somewhere in canvas 
 	this.direction = _.random(1, 2); 
-	this.position = [this.direction == 2 ? -50 : 550, _.random(canvas.width() - Fish.waterLevel, canvas.width())];
+
+	var randomHeight = _.random(canvas.height() - Fish.waterLevel, canvas.height() - 50); 
+
+	this.position = [this.direction == 2 ?  -100 : 600, randomHeight];
 	
+	this.fishCountdown = false; 
+
+};
+
+Fish.prototype.bounds = function(bitey) {
+	if (_.isUndefined(bitey)) {
+
+		return [
+			this.position[0], 
+			this.position[1], 
+			this.fishSize == 1 ? 50 : 100, 
+			this.fishSize == 1 ? 32 : 64
+		];
+	} else {
+		return [
+			this.position[0] + (this.direction == 1 ? 0 : (this.fishSize == 1 ? 36 : 84) ), 
+			this.position[1] + (this.fishSize == 1 ? 5 : 10), 
+			20, 
+			this.fishSize == 1 ? 20 : 40
+		];
+	}
+};
+
+Fish.prototype.die = function() {
+	this.fishCountdown = 1; 
 };
 
 Fish.prototype.draw = function() {
 	
 	var sprite = this.direction + ((Fish.ticks % 2) * 2);
 
-	this.canvas.drawSprite(Fish.underwaterSprite.get("fish", sprite), this.position[0], this.position[1]);
+	if (this.fishCountdown !== false) {
+		this.fishCountdown --; 
+
+		sprite = this.direction + 4;
+	}
+
+
+	this.canvas.drawSprite(Fish.underwaterSprite.get("fish" + this.fishSize, sprite), this.position[0], this.position[1]);
 	
 	if (this.direction == 2) {
 		this.position[0] += 3;
 	} else {
 		this.position[0] -= 3; 
+	}
+
+	// Dead fish 
+	if (this.fishCountdown === 0) {
+		return false; 
+	}
+
+	// Are we offscreen?
+	if (this.position[0] > this.canvas.width() + 150 || this.position[0] < -150) {
+		return false; 
 	}
 
 	// Return true if you want to keep being a fish!
@@ -1618,19 +4004,13 @@ function hexToRGB(hex) {
 
 function collides(a, b) {
 
-	// Test them in both orders 
-	return _.some([[a, b], [b, a]], function(objects){
-		// X, Y, W, H
-		var a = objects[0];
-		var b = objects[1];	
-
-		// If aX < bX + bW > (inside) AND 
-		if (a[0] < b[0] + b[2] && a[0] > b[0] &&
-			a[1] < b[1] + b[3] && a[1] > b[1]) {
-			return true; 
-		}
-
-	});
+	//  ( aLeft < bRight ) && (aLeft > bLeft)
+	//  aX   < bX   + bW   && aX   > bX   && 
+	//  aY   < bY   + bH   && aY   > bY  
+	if (a[0] <= b[0] + b[2] && a[0] + a[2] >= b[0] &&
+		a[1] <= b[1] + b[3] && a[1] + a[3] >= b[1]) {
+		return true; 
+	}
 
 }
 
@@ -1659,6 +4039,9 @@ function assert(a, b) {
 var Keys = function() {
 	this.keys = [];
 
+	this.onKeyDown = false; 
+	this.onKeyUp = false; 
+
 	this.codeToName = {
 		38: "up",
 		87: "up",
@@ -1680,7 +4063,11 @@ Keys.prototype.pressing = function(name) {
 Keys.prototype.keyDown = function(code) {
 
 	var keyName = _.isUndefined(this.codeToName[code]) ? false : this.codeToName[code]; 
-	
+
+	if (this.onKeyDown){
+		this.onKeyDown(keyName);
+	}
+
 	// Don't add twice 
 	if (keyName && _.indexOf(this.keys, keyName) == -1) {
 		this.keys.push(keyName); 
@@ -1691,6 +4078,10 @@ Keys.prototype.keyDown = function(code) {
 Keys.prototype.keyUp = function(code) {
 	// What key just changed?
 	var keyName = _.isUndefined(this.codeToName[code]) ? false : this.codeToName[code]; 
+
+	if (this.onKeyUp){
+		this.onKeyUp(keyName);
+	}
 
 	this.keys = _.without(this.keys, keyName); 
 
@@ -1742,25 +4133,23 @@ var Player = function(game, canvas, which) {
 	this.platform = false; 
 
 	this.isSubmarine = false; 
-
+	this.onSubmarine = false; 
 
 	var characterSchemes = [
-		{ 
-			"0,0,0"    	  : 0x000000,
-			"176,158,144" : 0x492B19,
-			"64,43,33"    : 0x000000
+		{
+			"255,0,255" : 0x492B19,
+			"100,255,0" : 0x000000
 		},
 		{ 
-			"0,0,0"    	  : 0x000000,
-			"176,158,144" : 0xB09E8F,
-			"64,43,33"    : 0x402B20
+			"255,0,255" : 0xB09E8F,
+			"100,255,0" : 0x402B20
 		}
 	];
 
-	var characters = [[0, "-tail"], [1, "-tail"], [0, ""], [1, ""]];
+	var characters = [[0, "0"], [1, "0"], [0, "1"], [1, "1"]];
 	var character  = characters[which - 1]; 
 
-	var player = new CanvasImage("/assets/character" + character[1] + "0.png"); 
+	var player = new CanvasImage("assets/character" + character[1] + ".png"); 
 
 	player.translateColors = characterSchemes[character[0]];
 
@@ -1779,11 +4168,15 @@ var Player = function(game, canvas, which) {
 		}
 	}); 
 
+	this.lastDamageCause = false; 
 	this.health = 5; 
 	this.maxHealth = 5; 
 	this.holdingBreath = true; 
 	this.breathHurtRate = 200;
 	this.holdingBreathFor = 0;
+
+	this.hitByFish = false;
+	this.damagedByFish = 0;
 
 	this.firingMissile = true; 
 	this.direction = 1; 
@@ -1795,12 +4188,23 @@ var Player = function(game, canvas, which) {
 
 };
 
+// Since this changes quite a bit 
+Player.prototype.height = function() {
+	return ((this.isSubmarine) ? 20: 32) * this.game.scale;
+};
+
+// Note: convert player width to standard "waist size" units, i.e. 32w
+Player.prototype.width = function() {
+	return ((this.inWater) ? 32 : 16) * this.game.scale;
+};
+
+
 Player.prototype.bounds = function() {
 	return [
 		this.position[0], 
 		this.position[1], 
-		32 * this.game.scale, 
-		32 * this.game.scale
+		this.width(),
+		this.height()
 	];
 };
 
@@ -1836,23 +4240,24 @@ Player.prototype.draw = function() {
 
 	} 
 
-	// Do not go outside the bounds of the canvas 
-	if (this.position[1] > this.canvas.height() - (32 * this.game.scale)) {
-		this.position[1] = this.canvas.height() - (32 * this.game.scale);
-	}
-
-	if (this.position[1] < 0) {
-		this.position[1] = 0;
-	}	
-
-
-	var waterY = this.canvas.height() - this.waterLevel;
+var waterY = this.canvas.height() - this.waterLevel;
 
 
 	// You can't go above the water level when in water 
 	if (this.inWater && this.position[1] < this.canvas.height() - this.waterLevel - 16) {
 		this.position[1] = this.canvas.height() - this.waterLevel - 16;
 	}
+
+	// Do not go outside the bounds of the canvas 
+	if (this.position[1] > this.canvas.height() - this.height()) {
+		this.position[1] = this.canvas.height() - this.height();
+	}
+
+	
+	if (this.position[1] < 0) {
+		this.position[1] = 0;
+	}
+
 
 	// Check platform if we aren't a sub 
 	if (this.platform && !this.isSubmarine) { 
@@ -1874,14 +4279,24 @@ Player.prototype.draw = function() {
 
 	}
 
+	// Are we in the water?
+	if (waterY < this.position[1] + 32) {
+		this.inWater = true; 
+	}
 
 	// Are we under water without a sub?
-	if (!this.isSubmarine && waterY < this.position[1] + 32) {
-		this.inWater = true; 
+	if (!this.isSubmarine && this.inWater) {
+		
+		// Fishes kill use instantly. Come on. Look at those teeth. 
+		if (this.hitByFish) {
+			this.lastDamageCause = "fish"; 
+
+			this.health = 0; 
+		}
 
 		// Well, is our head under water though? 
 		if (this.waterLevel > ( this.canvas.height() - this.position[1] - 10)) {
-
+			this.headUnderWater = true; 
 			// Are we holding our breath?
 			if (this.holdingBreath) {
 				this.holdingBreathFor++; 
@@ -1895,10 +4310,12 @@ Player.prototype.draw = function() {
 
 				// Take damage 
 				this.health--;
+
+				this.lastDamageCause = "water"; 
 			}
 
 		} else {
-
+			this.headUnderWater = false; 
 			// Breath!
 			if (this.holdingBreath && this.holdingBreathFor > 0) {
 				this.holdingBreathFor -= 2; 
@@ -1918,9 +4335,36 @@ Player.prototype.draw = function() {
 	var spriteNumber = 1; 
 
 	var speed; 
-	if (this.isSubmarine) { 
+	if (this.onSubmarine) {
 
+		// This is a very simple endgame state - just draw the sub with the player on top 
 		this.canvas.drawSprite(this.underwaterSprite.get("submarine", this.direction), this.position[0], this.position[1]);
+		this.canvas.drawSprite(this.sprite.get("walking", 1), this.position[0], this.position[1] - 24);
+
+	} else if (this.isSubmarine) { 
+		
+		spriteNumber = this.direction; 
+
+		if (this.health < 3) {
+			spriteNumber = this.direction + 4; 
+		}
+
+		if (this.hitByFish) {
+			spriteNumber = this.direction + 2; 
+			this.hitByFish = false; 
+			this.damagedByFish++; 
+
+			this.lastDamageCause = "fish"; 
+	
+		}
+
+		// Check if the damage from the fish should cause a health loss 
+		if (this.damagedByFish > 25) {
+			this.health--;
+			this.damagedByFish = 0; 
+		}
+
+		this.canvas.drawSprite(this.underwaterSprite.get("submarine", spriteNumber), this.position[0], this.position[1]);
 
 		speed = 3; 
 
@@ -1951,9 +4395,10 @@ Player.prototype.draw = function() {
 			if (!this.firingMissile) {
 			
 				this.missiles.push({
-					position: [this.position[0] + 14, this.position[1] + 18],
+					position: [this.position[0] + 14, this.position[1] + 6],
 					velocity: [this.direction == 1 ? 8 : -8, 0],
-					direction: this.direction
+					direction: this.direction,
+					hit: false, 
 				});
 			}
 
@@ -1963,6 +4408,7 @@ Player.prototype.draw = function() {
 			this.firingMissile = false; 
 		}
 
+	// Player 
 	} else {
 
 		var spriteToUse;
@@ -2013,25 +4459,43 @@ Player.prototype.draw = function() {
 
 	}
 
-
-
 	// Render each missile 
 	this.missiles = _.filter(this.missiles, function(missile) {
+
+		// Are we past the edges?
+		if (missile.position[0] > 500 || missile.hit == 2) {
+			return false; 
+		}
+
 		// Continue to propel 
 		missile.position[0] += missile.velocity[0]; 
 		missile.position[1] += missile.velocity[1]; 
 
-		self.canvas.drawSprite(self.underwaterSprite.get("missile", missile.direction), missile.position[0], missile.position[1]);
+		var sprite = missile.direction;
 
-		// Are we past the edges?
-		if (missile.position[0] > 500) {
-			return false; 
+		if (missile.hit) {
+			sprite = 3; 
+			missile.hit = 2; 
 		}
-		
+
+		self.canvas.drawSprite(self.underwaterSprite.get("missile", sprite), missile.position[0], missile.position[1]);
+
 		// Keep it 
 		return true; 
 
 	});
+
+	// If we are a submarine 
+	if (this.isSubmarine) {
+
+		// Draw a nice cover 
+		var coverNumber = this.direction + 8;
+		if (this.hitByFish) {
+			coverNumber -= 2;
+		}
+
+		this.canvas.drawSprite(this.underwaterSprite.get("submarine", coverNumber), this.position[0], this.position[1]);
+	}
 
 };
 
@@ -2040,13 +4504,12 @@ var Sprite = function(image, data) {
 	
 	// Auto load urls 
 	if (_.isString(image)) {
-		console.log("Found a string one!");
 		this.image = new Image();
 		this.image.src = image; 
 	} else {
 		this.image = image; 
 	}
-	
+
 	this.data = data; 
 };
 
@@ -2068,7 +4531,67 @@ Sprite.prototype.get = function(name, x, y) {
 };
 
 
+var debug = false; 
+var debugConsole = false; 
+
+var fishBeforeLevel2 = 8; 
+var fishBeforeLevel3 = 16; 
+
+
+
 window.onload = function() {
+
+	// Play some music 
+	var context = new AudioContext();
+
+	var out = new WebAudiox.LineOut(context);
+
+	var sourceNode; 
+	var sourceNode2; 
+	var sourceNode3; 
+
+	var gainNode1 = context.createGain(); 
+	var gainNode2 = context.createGain(); 
+	var gainNode3 = context.createGain(); 
+
+	gainNode1.connect(out.destination);
+	gainNode2.connect(out.destination);
+	gainNode3.connect(out.destination);
+
+	gainNode1.gain.value = 1;
+	gainNode2.gain.value = 0;
+	gainNode3.gain.value = 0;
+
+	WebAudiox.loadBuffer(context, "assets/sound/music.mp3", function(buffer) {
+
+		// Play 
+		sourceNode = context.createBufferSource();
+		sourceNode.buffer = buffer;
+		sourceNode.connect(gainNode1);
+		sourceNode.loop = true; 
+		sourceNode.loopEnd = 9.6; 
+
+		sourceNode2 = context.createBufferSource();
+		sourceNode2.buffer = buffer;
+		sourceNode2.connect(gainNode2);
+		sourceNode2.loop = true; 
+		sourceNode2.loopStart = 9.6; 
+		sourceNode2.loopEnd   = 2 * 9.6; 
+
+		sourceNode3 = context.createBufferSource();
+		sourceNode3.buffer = buffer;
+		sourceNode3.connect(gainNode3);
+		sourceNode3.loop = true; 
+		sourceNode3.loopStart = 2 * 9.6; 
+		sourceNode3.loopEnd   = 3 * 9.6; 
+	
+		sourceNode.start(0);
+		sourceNode2.start(0, 9.6);
+		sourceNode3.start(0, 2 * 9.6);
+
+
+	});
+
 
 	var game = new Game(); 
 	game.scale = 2; 
@@ -2077,7 +4600,7 @@ window.onload = function() {
 	
 	var c = canvas.context; 
 
-	var start = new Sprite("/assets/start.png", {
+	var start = new Sprite("assets/start.png", {
 		button: {
 			offsetX: 0,
 			offsetY: 0,
@@ -2086,7 +4609,7 @@ window.onload = function() {
 		}
 	});
 
-	var ui = new Sprite("/assets/ui.png", {
+	var ui = new Sprite("assets/ui.png", {
 		heart: {
 			offsetX: 0, 		
 			offsetY: 0, 
@@ -2096,7 +4619,7 @@ window.onload = function() {
 		text: {
 			offsetX: 0,
 			offsetY: 8,
-			gridX: 100,
+			gridX: 72,
 			gridY: 16
 		},
 		cause: {
@@ -2104,11 +4627,22 @@ window.onload = function() {
 			offsetY: 40,
 			gridX: 100,
 			gridY: 8
+		},
+		score: {
+			offsetX: 0,
+			offsetY: 56,
+			gridX: 100,
+			gridY: 8
+		},
+		numbers: {
+			offsetX: 0,
+			offsetY: 64,
+			gridX: 4,
+			gridY: 8
 		}
-
 	}); 
 
-	var underwater = new Sprite("/assets/underwater.png", {
+	var underwater = new Sprite("assets/underwater.png", {
 		submarine: {
 			offsetX: 0, 		
 			offsetY: 0, 
@@ -2127,11 +4661,23 @@ window.onload = function() {
 			gridX: 32,
 			gridY: 16
 		},
-		fish: {
+		fish1: {
 			offsetX: 0, 		
 			offsetY: 96, 
 			gridX: 32,
 			gridY: 16
+		},
+		fish2: {
+			offsetX: 0, 		
+			offsetY: 112, 
+			gridX: 64,
+			gridY: 32
+		},
+		fish3: {
+			offsetX: 0, 		
+			offsetY: 144, 
+			gridX: 64,
+			gridY: 248
 		}
 	}); 
 
@@ -2141,6 +4687,7 @@ window.onload = function() {
 
 	player.canvas = canvas; 
 	player.inWater = false; 
+	player.onSubmarine = false; 
 	player.platform  = [canvas.centerY(18), canvas.centerX(52), 18, 52];
 	player.position = [canvas.centerX(16), 0];
 	player.underwaterSprite = underwater;
@@ -2160,13 +4707,50 @@ window.onload = function() {
 	var healthTotal = 5; 
 	var health = 5; 
 
+	// Endgame 
+	var distanceToPipe = 100;		
+	var endgame = 0; 
+
 	var fishes = []; 
+	Fish.fishKilled = 0; 
 
 	// Keys 
 	var keys = new Keys();
 	keys.bind();
 
+	var paused = false; 
+	var escReleased = true;
+
+	keys.onKeyDown = function(name) {
+		if (name == "esc") {
+			if (escReleased) {
+				escReleased = false; 
+				paused = !paused; 
+			}
+
+			if (paused) {
+				out.volume = 0;
+			} else {
+				out.volume = 1.0;
+			}
+		}
+	};
+
+	keys.onKeyUp = function(name) {
+		if (name == "esc") {
+			escReleased = true; 
+		}
+	};
+
 	function loop() {
+
+		if (paused) {
+			
+			// Request the next frame 
+			window.requestAnimationFrame(loop);
+
+			return ;
+		}
 
 		// Check for game over 
 		if (player.health === 0) {
@@ -2175,9 +4759,18 @@ window.onload = function() {
 
 			canvas.drawSprite(ui.get("text", 1), canvas.centerX(72), canvas.centerY(10)); 
 
-			canvas.drawSprite(ui.get("cause", 1, 1), canvas.centerX(57), canvas.centerY(5) + 20); 
+			var causeSprite = player.lastDamageCause == "water" ? 1 : 2;
+			canvas.drawSprite(ui.get("cause", 1, causeSprite), canvas.centerX(57), canvas.centerY(5) + 20); 
 
 			return; 	
+		}
+
+		// Check for game won
+		if (endgame > 200 && waterLevel < 0) {
+
+			canvas.drawSprite(ui.get("text", 2), canvas.centerX(72), canvas.centerY(10)); 
+
+			return; 
 		}
 
 		// Look for the 50ms tick 
@@ -2211,42 +4804,42 @@ window.onload = function() {
 
 		// Water BG
 		c.fillStyle = "rgba(34, 32, 52, 1)"; //"#30374E";
-		c.fillRect(0, canvas.height() - waterLevel - 1, canvas.width(), waterLevel); 
+		c.fillRect(-1, canvas.height() - waterLevel , canvas.width(), waterLevel); 
 
-		// Had the platform been destroyed yet? 
-		if (waterY < player.platform[1]) {
-		
-			// Destroy the platform 
-			player.platform = false; 
-		} else {
+		// Don't do this in the endgame 
+		if (!endgame) { 
 
-			// Place the "start button"
-			if (waterLevel < 50) {
-				canvas.drawSprite(start.get("button", 1, 1), canvas.centerX(52), canvas.centerY(18));
+			// Had the platform been destroyed yet? 
+			if (waterY < player.platform[1]) {
 			
-				if (waterLevel > 25) {
-					canvas.drawSprite(start.get("button", 1, 2), canvas.centerX(52), canvas.centerY(18), ((waterLevel - 25) / 25));
-				}
+				// Destroy the platform 
+				player.platform = false; 
+			} else {
 
-			} else if (waterLevel < 100) {
-
-				// So code duplication 
-				canvas.drawSprite(start.get("button", 1, 2), canvas.centerX(52), canvas.centerY(18));
-			
-			} else if (waterLevel < 400) {
-				canvas.drawSprite(start.get("button", 1, 3), canvas.centerX(52), canvas.centerY(18));
+				// Place the "start button"
+				if (waterLevel < 50) {
+					canvas.drawSprite(start.get("button", 1, 1), canvas.centerX(52), canvas.centerY(18));
 				
-				var opacity = 1; 
-				if (waterLevel > 300) {
-					opacity = 0.1; 
-				} else {
+					if (waterLevel > 25) {
+						canvas.drawSprite(start.get("button", 1, 2), canvas.centerX(52), canvas.centerY(18), ((waterLevel - 25) / 25));
+					}
 
-				}
-				canvas.drawSprite(start.get("button", 1, 4), canvas.centerX(52), canvas.centerY(18) + ((waterLevel - 100) * 3) );
-			} 
+				} else if (waterLevel < 100) {
 
-
-		
+					// So code duplication 
+					canvas.drawSprite(start.get("button", 1, 2), canvas.centerX(52), canvas.centerY(18));
+				
+				} else if (waterLevel < 400) {
+					canvas.drawSprite(start.get("button", 1, 3), canvas.centerX(52), canvas.centerY(18));
+					
+					var whichDirt = 4; 
+					//if (waterLevel > 120) {
+					//	whichDirt++; 
+					//}	
+					
+					canvas.drawSprite(start.get("button", 1, whichDirt), canvas.centerX(52), canvas.centerY(18) + ((waterLevel - 100) * 3) );
+				} 	
+			}
 		}
 
 		// Draw water 
@@ -2258,50 +4851,185 @@ window.onload = function() {
 
 			// Is it sub time? I think it's sub time.
 			canvas.drawSprite(underwater.get("submarine", 1), - 56, 500 - 40);
+		
 		}
 
+		// Handle sound mixing 
+		if (player.onSubmarine) {
+			
+			gainNode3.gain.value = 0;
+			gainNode2.gain.value = 0; 
+			gainNode1.gain.value = 1;
+
+		} else if (player.isSubmarine) {
+			gainNode3.gain.value = 0;
+			gainNode2.gain.value = 1; 
+			gainNode1.gain.value = 0; 
+		} else if (player.inWater && player.headUnderWater) {
+			gainNode3.gain.value = 1;
+			gainNode2.gain.value = 0; 
+			gainNode1.gain.value = 0; 
+		} else {
+			gainNode3.gain.value = 0;
+			gainNode2.gain.value = 0; 
+			gainNode1.gain.value = 1; 
+		} 
+
 		// And a pipe. We need a pipe. 
- 		canvas.drawSprite(underwater.get("pipe", (ticks % 4) +2 ) , 400, 500 - 24);
+		if (endgame > 100) { 
+ 			canvas.drawSprite(underwater.get("pipe", 6) , 400, 500 - 24);
+		} else {	
+ 			canvas.drawSprite(underwater.get("pipe", (ticks % 4) +2 ) , 400, 500 - 24);
+ 		}
 
  		// Is the pipe colliding with anything 
  		if (collides([400, 500 - (12 * game.scale), game.scale * 12, game.scale * 12], player.bounds())) {
 
- 			// Yes, explain this 
-			canvas.drawSprite(ui.get("cause", 1, (player.submarine ? -1 : 0) ), 180, 500 - 20); 
-
+ 			// Yes, explain this if not in the end game
+ 			if (endgame === 0) {
+				canvas.drawSprite(ui.get("cause", 1, (player.submarine ? -1 : 0) ), 180, 500 - 20); 
+			}
  		}
 
-
  		// Is the sub colliding with anything 
- 		if (collides([0, 500 - 40, game.scale * 34, game.scale * 20], player.bounds())) {
+ 		var tmpSubBounds = [-60, 500 - 40, game.scale * 34, game.scale * 20]; 
+ 		if (!player.isSubmarine && collides(tmpSubBounds, player.bounds())) {
 
  			// Sub activated 
  			player.isSubmarine = true; 
 
+ 			// Move the player to the same place the sub was 
+ 			player.position = [-50, 500 - 40];
  		}
+
+		// Show bounds
+ 		if (debug) { 
+			c.strokeStyle = "white";
+			c.strokeRect(tmpSubBounds[0] + 0.5, tmpSubBounds[1] + 0.5, tmpSubBounds[2], tmpSubBounds[3]); 
+		}
 
 		// Tell the player what keys are being pressed
 		player.keys = keys;
 
 		// Let it draw itself - not sure this is a good idea 
 		player.draw();
+
+		// Are we in the end game yet? 
+		if (Fish.fishKilled > fishBeforeLevel3 && this.fishes.length === 0) { 
+			endgame++; 
+
+			// Giant fish comes in
+			var giantX; 
+
+			if (waterLevel < 20) {
+				player.onSubmarine = true; 
+			}
+
+			if (endgame > 200) {
 		
+				// Drain water!
+				waterLevel -= 2;
 
-		// If the water is over 200, start spawning fish 
-		if (waterLevel > 100) {
+				// Go back
+				giantX = (500 - distanceToPipe) + (endgame - 200); 
 
-			// What are the chances? (somewhere around 1 in 100)
-			if (_.random(1, 100) == 1) {
-				this.fishes.push(new Fish(canvas));
+			} else if (endgame > distanceToPipe) {
+				
+				// Drain water!
+				waterLevel -= 2;
+
+				// Wait
+				giantX = 500 - distanceToPipe;
+
+			} else {
+
+				// Go forward 
+				giantX = 500 - endgame; 
+			}
+
+			canvas.drawSprite(underwater.get("fish3", 1), giantX, 300);
+
+		} else {
+
+			// If we've killed all the fish we need to, stop spawning fish
+			if (Fish.fishKilled <= fishBeforeLevel3) { 
+
+				// If the water is over 80, start spawning fish 
+				if (waterLevel > 80) {
+
+					// What are the chances? (somewhere around 1 in 100)
+					if (_.random(1, 80) == 1) {
+						this.fishes.push(new Fish(canvas));
+					}
+
+				}
+
 			}
 
 		}
 
 		// Draw every fish 
+		fishCollide = false;  
 		this.fishes = _.filter(this.fishes, function(fish) {
-			return fish.draw();
+
+			// Check if this fish is colliding with the player 
+			var fishBounds = fish.bounds("bitey"); 
+			fishCollide = fishCollide || collides(fishBounds, player.bounds());
+
+			// Check if the fish is colliding with any of the players missiles 
+			var fishHit = false; 
+			fishBounds = fish.bounds(); 
+			player.missiles = _.map(player.missiles, function(missile) {
+				
+				var missileBounds = [missile.position[0] + 6, missile.position[1] + 10, 32, 8];
+
+				if (debug) { 	
+					// Show bounds
+					c.strokeStyle = "white";
+					c.strokeRect(missileBounds[0] + 0.5, missileBounds[1] + 0.5, missileBounds[2], missileBounds[3]); 
+				}
+
+				// Tell the missile it hit something 
+				if (collides(fishBounds, missileBounds)) {
+					missile.hit = true; 
+					fishHit = true;
+				}
+
+				return missile;
+
+			}); 
+
+			if (fishHit) {
+				Fish.fishKilled++;
+				fish.die(); 
+			}
+
+			var keepFish = fish.draw();
+
+			if (debug) { 
+		
+				// Show bounds
+				c.strokeStyle = fishHit ? "red" : "white"; 
+				c.strokeRect(fishBounds[0] + 0.5, fishBounds[1] + 0.5, fishBounds[2], fishBounds[3]); 
+				c.strokeRect(fishBounds[0] + 1.5, fishBounds[1] + 1.5, 1, 1); 
+
+				fishBounds = fish.bounds("bitey"); 
+
+				// Show bounds
+				c.strokeStyle = "yellow"; 
+				c.strokeRect(fishBounds[0] + 0.5, fishBounds[1] + 0.5, fishBounds[2], fishBounds[3]); 
+				c.strokeRect(fishBounds[0] + 1.5, fishBounds[1] + 1.5, 1, 1); 
+
+			}
+
+
+			return keepFish; 
 		});
 
+		// Are we being eaten by a fish?
+		if (fishCollide) {
+			player.hitByFish = true; 
+		}
 
 		// UI 
 		var healthX = 10; 
@@ -2316,20 +5044,44 @@ window.onload = function() {
 			healthX += 9 * game.scale; 
 		}
 
+		var layoutX = healthX + 12; 
+		var layoutY = 10; 
+		canvas.drawSprite(ui.get("score", 1), layoutX, layoutY);
 
+		layoutX += 90;
+
+		var fishText = Fish.fishKilled + "";
+		_.each(fishText.split(""), function(number) {
+			
+			var sprite = parseInt(number);
+			sprite = sprite === 0 ? 10 : sprite; 
+
+			canvas.drawSprite(ui.get("numbers", sprite), layoutX, layoutY);
+
+			layoutX += 8;
+		}); 
 
 		// Debug code 
 		var debugY = 20; 
-		var debugOffsetX = healthX; 
+		var debugOffsetX = layoutX; 
 
 		c.font = "14px Helvetica";
 
-		c.fillStyle = "rgba(255, 255, 255, 0.5)";
-		c.fillText("Frames: " + frames % 30, debugOffsetX + 10, debugY); 
-		c.fillText("Seconds: " + Math.round((Date.now() - startTime) / 1000), debugOffsetX + 100, debugY); 
-		c.fillText("FPS: " + Math.round(frames / ((Date.now() - startTime) / 1000)), debugOffsetX + 200, debugY); 
-		c.fillText("M: " + player.missiles.length, debugOffsetX + 260, debugY); 
+		if (debug) { 
 		
+			// Show bounds
+			var playerBounds = player.bounds(); 
+			c.strokeStyle = fishCollide ? "red" : "white"; 
+			c.strokeRect(playerBounds[0] + 0.5, playerBounds[1] + 0.5, playerBounds[2], playerBounds[3]); 
+			c.strokeRect(playerBounds[0] + 1.5, playerBounds[1] + 1.5, 1, 1); 
+		}
+
+		if (debugConsole) {
+
+			c.fillStyle = "rgba(255, 255, 255, 0.5)";
+			c.fillText("DmgTyp: " + player.lastDamageCause, debugOffsetX + 150, debugY); 
+			c.fillText("FPS: " + Math.round(frames / ((Date.now() - startTime) / 1000)), debugOffsetX + 20, debugY); 
+		}	
 
 		// Request the next frame 
 		window.requestAnimationFrame(loop);

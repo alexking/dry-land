@@ -12,7 +12,10 @@ module.exports = function(grunt) {
 		// Combine bower components in the correct order 
 		bower_concat: {
 			target: {
-				dest: "bower_components/combined.js"
+				dest: "bower_components/combined.js",
+				mainFiles: {
+					"webaudiox": "build/webaudiox.js"
+				}
 			}
 		},
 

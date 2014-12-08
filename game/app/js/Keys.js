@@ -1,6 +1,9 @@
 var Keys = function() {
 	this.keys = [];
 
+	this.onKeyDown = false; 
+	this.onKeyUp = false; 
+
 	this.codeToName = {
 		38: "up",
 		87: "up",
@@ -22,7 +25,11 @@ Keys.prototype.pressing = function(name) {
 Keys.prototype.keyDown = function(code) {
 
 	var keyName = _.isUndefined(this.codeToName[code]) ? false : this.codeToName[code]; 
-	
+
+	if (this.onKeyDown){
+		this.onKeyDown(keyName);
+	}
+
 	// Don't add twice 
 	if (keyName && _.indexOf(this.keys, keyName) == -1) {
 		this.keys.push(keyName); 
@@ -33,6 +40,10 @@ Keys.prototype.keyDown = function(code) {
 Keys.prototype.keyUp = function(code) {
 	// What key just changed?
 	var keyName = _.isUndefined(this.codeToName[code]) ? false : this.codeToName[code]; 
+
+	if (this.onKeyUp){
+		this.onKeyUp(keyName);
+	}
 
 	this.keys = _.without(this.keys, keyName); 
 

@@ -11,25 +11,23 @@ var Player = function(game, canvas, which) {
 	this.platform = false; 
 
 	this.isSubmarine = false; 
-
+	this.onSubmarine = false; 
 
 	var characterSchemes = [
-		{ 
-			"0,0,0"    	  : 0x000000,
-			"176,158,144" : 0x492B19,
-			"64,43,33"    : 0x000000
+		{
+			"255,0,255" : 0x492B19,
+			"100,255,0" : 0x000000
 		},
 		{ 
-			"0,0,0"    	  : 0x000000,
-			"176,158,144" : 0xB09E8F,
-			"64,43,33"    : 0x402B20
+			"255,0,255" : 0xB09E8F,
+			"100,255,0" : 0x402B20
 		}
 	];
 
-	var characters = [[0, "-tail"], [1, "-tail"], [0, ""], [1, ""]];
+	var characters = [[0, "0"], [1, "0"], [0, "1"], [1, "1"]];
 	var character  = characters[which - 1]; 
 
-	var player = new CanvasImage("/assets/character" + character[1] + "0.png"); 
+	var player = new CanvasImage("assets/character" + character[1] + ".png"); 
 
 	player.translateColors = characterSchemes[character[0]];
 
@@ -48,11 +46,15 @@ var Player = function(game, canvas, which) {
 		}
 	}); 
 
+	this.lastDamageCause = false; 
 	this.health = 5; 
 	this.maxHealth = 5; 
 	this.holdingBreath = true; 
 	this.breathHurtRate = 200;
 	this.holdingBreathFor = 0;
+
+	this.hitByFish = false;
+	this.damagedByFish = 0;
 
 	this.firingMissile = true; 
 	this.direction = 1; 
@@ -64,12 +66,23 @@ var Player = function(game, canvas, which) {
 
 };
 
+// Since this changes quite a bit 
+Player.prototype.height = function() {
+	return ((this.isSubmarine) ? 20: 32) * this.game.scale;
+};
+
+// Note: convert player width to standard "waist size" units, i.e. 32w
+Player.prototype.width = function() {
+	return ((this.inWater) ? 32 : 16) * this.game.scale;
+};
+
+
 Player.prototype.bounds = function() {
 	return [
 		this.position[0], 
 		this.position[1], 
-		32 * this.game.scale, 
-		32 * this.game.scale
+		this.width(),
+		this.height()
 	];
 };
 
@@ -105,23 +118,24 @@ Player.prototype.draw = function() {
 
 	} 
 
-	// Do not go outside the bounds of the canvas 
-	if (this.position[1] > this.canvas.height() - (32 * this.game.scale)) {
-		this.position[1] = this.canvas.height() - (32 * this.game.scale);
-	}
-
-	if (this.position[1] < 0) {
-		this.position[1] = 0;
-	}	
-
-
-	var waterY = this.canvas.height() - this.waterLevel;
+var waterY = this.canvas.height() - this.waterLevel;
 
 
 	// You can't go above the water level when in water 
 	if (this.inWater && this.position[1] < this.canvas.height() - this.waterLevel - 16) {
 		this.position[1] = this.canvas.height() - this.waterLevel - 16;
 	}
+
+	// Do not go outside the bounds of the canvas 
+	if (this.position[1] > this.canvas.height() - this.height()) {
+		this.position[1] = this.canvas.height() - this.height();
+	}
+
+	
+	if (this.position[1] < 0) {
+		this.position[1] = 0;
+	}
+
 
 	// Check platform if we aren't a sub 
 	if (this.platform && !this.isSubmarine) { 
@@ -143,14 +157,24 @@ Player.prototype.draw = function() {
 
 	}
 
+	// Are we in the water?
+	if (waterY < this.position[1] + 32) {
+		this.inWater = true; 
+	}
 
 	// Are we under water without a sub?
-	if (!this.isSubmarine && waterY < this.position[1] + 32) {
-		this.inWater = true; 
+	if (!this.isSubmarine && this.inWater) {
+		
+		// Fishes kill use instantly. Come on. Look at those teeth. 
+		if (this.hitByFish) {
+			this.lastDamageCause = "fish"; 
+
+			this.health = 0; 
+		}
 
 		// Well, is our head under water though? 
 		if (this.waterLevel > ( this.canvas.height() - this.position[1] - 10)) {
-
+			this.headUnderWater = true; 
 			// Are we holding our breath?
 			if (this.holdingBreath) {
 				this.holdingBreathFor++; 
@@ -164,10 +188,12 @@ Player.prototype.draw = function() {
 
 				// Take damage 
 				this.health--;
+
+				this.lastDamageCause = "water"; 
 			}
 
 		} else {
-
+			this.headUnderWater = false; 
 			// Breath!
 			if (this.holdingBreath && this.holdingBreathFor > 0) {
 				this.holdingBreathFor -= 2; 
@@ -187,9 +213,36 @@ Player.prototype.draw = function() {
 	var spriteNumber = 1; 
 
 	var speed; 
-	if (this.isSubmarine) { 
+	if (this.onSubmarine) {
 
+		// This is a very simple endgame state - just draw the sub with the player on top 
 		this.canvas.drawSprite(this.underwaterSprite.get("submarine", this.direction), this.position[0], this.position[1]);
+		this.canvas.drawSprite(this.sprite.get("walking", 1), this.position[0], this.position[1] - 24);
+
+	} else if (this.isSubmarine) { 
+		
+		spriteNumber = this.direction; 
+
+		if (this.health < 3) {
+			spriteNumber = this.direction + 4; 
+		}
+
+		if (this.hitByFish) {
+			spriteNumber = this.direction + 2; 
+			this.hitByFish = false; 
+			this.damagedByFish++; 
+
+			this.lastDamageCause = "fish"; 
+	
+		}
+
+		// Check if the damage from the fish should cause a health loss 
+		if (this.damagedByFish > 25) {
+			this.health--;
+			this.damagedByFish = 0; 
+		}
+
+		this.canvas.drawSprite(this.underwaterSprite.get("submarine", spriteNumber), this.position[0], this.position[1]);
 
 		speed = 3; 
 
@@ -220,9 +273,10 @@ Player.prototype.draw = function() {
 			if (!this.firingMissile) {
 			
 				this.missiles.push({
-					position: [this.position[0] + 14, this.position[1] + 18],
+					position: [this.position[0] + 14, this.position[1] + 6],
 					velocity: [this.direction == 1 ? 8 : -8, 0],
-					direction: this.direction
+					direction: this.direction,
+					hit: false, 
 				});
 			}
 
@@ -232,6 +286,7 @@ Player.prototype.draw = function() {
 			this.firingMissile = false; 
 		}
 
+	// Player 
 	} else {
 
 		var spriteToUse;
@@ -282,24 +337,42 @@ Player.prototype.draw = function() {
 
 	}
 
-
-
 	// Render each missile 
 	this.missiles = _.filter(this.missiles, function(missile) {
+
+		// Are we past the edges?
+		if (missile.position[0] > 500 || missile.hit == 2) {
+			return false; 
+		}
+
 		// Continue to propel 
 		missile.position[0] += missile.velocity[0]; 
 		missile.position[1] += missile.velocity[1]; 
 
-		self.canvas.drawSprite(self.underwaterSprite.get("missile", missile.direction), missile.position[0], missile.position[1]);
+		var sprite = missile.direction;
 
-		// Are we past the edges?
-		if (missile.position[0] > 500) {
-			return false; 
+		if (missile.hit) {
+			sprite = 3; 
+			missile.hit = 2; 
 		}
-		
+
+		self.canvas.drawSprite(self.underwaterSprite.get("missile", sprite), missile.position[0], missile.position[1]);
+
 		// Keep it 
 		return true; 
 
 	});
+
+	// If we are a submarine 
+	if (this.isSubmarine) {
+
+		// Draw a nice cover 
+		var coverNumber = this.direction + 8;
+		if (this.hitByFish) {
+			coverNumber -= 2;
+		}
+
+		this.canvas.drawSprite(this.underwaterSprite.get("submarine", coverNumber), this.position[0], this.position[1]);
+	}
 
 };

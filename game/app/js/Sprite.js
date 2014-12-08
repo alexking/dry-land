@@ -3,13 +3,12 @@ var Sprite = function(image, data) {
 	
 	// Auto load urls 
 	if (_.isString(image)) {
-		console.log("Found a string one!");
 		this.image = new Image();
 		this.image.src = image; 
 	} else {
 		this.image = image; 
 	}
-	
+
 	this.data = data; 
 };
 

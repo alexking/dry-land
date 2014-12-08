@@ -15,19 +15,13 @@ function hexToRGB(hex) {
 
 function collides(a, b) {
 
-	// Test them in both orders 
-	return _.some([[a, b], [b, a]], function(objects){
-		// X, Y, W, H
-		var a = objects[0];
-		var b = objects[1];	
-
-		// If aX < bX + bW > (inside) AND 
-		if (a[0] < b[0] + b[2] && a[0] > b[0] &&
-			a[1] < b[1] + b[3] && a[1] > b[1]) {
-			return true; 
-		}
-
-	});
+	//  ( aLeft < bRight ) && (aLeft > bLeft)
+	//  aX   < bX   + bW   && aX   > bX   && 
+	//  aY   < bY   + bH   && aY   > bY  
+	if (a[0] <= b[0] + b[2] && a[0] + a[2] >= b[0] &&
+		a[1] <= b[1] + b[3] && a[1] + a[3] >= b[1]) {
+		return true; 
+	}
 
 }
 
