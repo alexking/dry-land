@@ -1,19 +1,29 @@
 <!DOCTYPE html>
 <html>
 <head>
-	<title>ld31</title>
+	<title>dryland</title>
 	<script type="text/javascript" src="index.js"></script>
 	<style type="text/css">
 		body {
-			background: #999; 
+			background: #333; 
+			margin: 0;
+			padding: 0;
+		}
+
+		#center {
+			width: 500px;
+			margin: 10px auto;
 		}
 
 		canvas {
-			background: #888;
+			border-width: 14px;
+			border-image: url(/assets/corner.png) 14;
 		}
 	</style>
 </head>
 <body>
-	<canvas width="500" height="500" id="canvas" /></canvas>
+	<div id="center">
+		<canvas width="500" height="500" id="canvas" /></canvas>
+	</div>
 </body>
 </html>

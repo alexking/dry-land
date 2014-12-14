@@ -1,9 +1,10 @@
 var debug = false; 
 var debugConsole = false; 
 
-var fishBeforeLevel2 = 8; 
-var fishBeforeLevel3 = 16; 
-
+var hardness = 1;
+var fishBeforeLevel2 = hardness * 1; 
+var fishBeforeLevel3 = hardness * 2; 
+var volume = 0.0; 
 
 
 window.onload = function() {
@@ -12,6 +13,7 @@ window.onload = function() {
 	var context = new AudioContext();
 
 	var out = new WebAudiox.LineOut(context);
+	out.volume = volume; 
 
 	var sourceNode; 
 	var sourceNode2; 
@@ -60,12 +62,18 @@ window.onload = function() {
 	});
 
 
+
+
 	var game = new Game(); 
 	game.scale = 2; 
 
 	var canvas = new Canvas(game, document.getElementById("canvas")); 
 	
 	var c = canvas.context; 
+
+	var title = new Image();
+	title.src = "assets/title.png"; 
+
 
 	var start = new Sprite("assets/start.png", {
 		button: {
@@ -106,6 +114,18 @@ window.onload = function() {
 			offsetY: 64,
 			gridX: 4,
 			gridY: 8
+		},
+		lines: {
+			offsetX: 0,
+			offsetY: 72,
+			gridX: 100,
+			gridY: 8
+		},
+		border: {
+			offsetX: 0,
+			offsetY: 80,
+			gridX: 24,
+			gridY: 40
 		}
 	}); 
 
@@ -185,6 +205,8 @@ window.onload = function() {
 	var keys = new Keys();
 	keys.bind();
 
+	var startScreen = true; 
+	var started = false; 
 	var paused = false; 
 	var escReleased = true;
 
@@ -198,7 +220,7 @@ window.onload = function() {
 			if (paused) {
 				out.volume = 0;
 			} else {
-				out.volume = 1.0;
+				out.volume = volume;
 			}
 		}
 	};
@@ -209,13 +231,99 @@ window.onload = function() {
 		}
 	};
 
+
+	// Create characters
+	var characters = _.map(_.range(4), function(number) { return new Character(number + 1); });
+
+	var characterPositions = _.shuffle([
+		[ 352, 175 ], 
+		[ 120, 175 ],
+		[ 430, 135 ],
+		[ 57,  124 ]
+	]);
+
+	var chosenCharacter = false;
+
 	function loop() {
+
+		if (startScreen && !started) {
+
+			canvas.flood("#888");
+
+			// Mouse bounds 
+			var mouseBounds = [canvas.mouseX,   canvas.mouseY,   1, 1]; 
+
+			// Set the cursor to normal
+			canvas.cursor("auto");
+
+			// Check if we've already chosen a character 
+			if (chosenCharacter) {
+
+				// Draw the start button 
+				canvas.drawSprite(start.get("button", 1, 1), canvas.centerX(52), canvas.centerY(18));
+
+				// Check for clicks 
+				var boxBounds  = [canvas.centerX(52), canvas.centerY(18), 104, 36]; 
+					
+				// Show bounds
+				canvas.drawBounds(boxBounds);
+				canvas.drawBounds(mouseBounds);
+
+				if (collides(boxBounds, mouseBounds)) {
+				
+					canvas.cursor("pointer");
+
+					if (canvas.mouseDown) {
+						started = true; 
+					}
+
+				} 
+
+			} else {
+
+				canvas.drawImage(title, 0, 0, 217, 139, canvas.centerX(217), canvas.centerY(73));
+	
+				_.each(characterPositions, function(position, key) {
+					canvas.drawSprite(characters[key].sprite.get("walking", 3), position[0], position[1] );
+									
+					// Box
+					var boxBounds  = [position[0] - 8, position[1] - 5, 48, 80]; 
+					
+					// Show bounds
+					canvas.drawBounds(boxBounds);
+					canvas.drawBounds(mouseBounds);
+					
+					// Check for mouse hovers 
+					if (collides(boxBounds, mouseBounds)) {
+						canvas.drawSprite(ui.get("border", 1), position[0] - 8, position[1] - 5); 
+					
+						canvas.cursor("pointer");
+
+						if (canvas.mouseDown) {
+							chosenCharacter = true; 
+							player.setCharacter(key + 1); 
+						}
+
+					} else {
+
+						canvas.drawSprite(ui.get("border", 2), position[0] - 8, position[1] - 5, 0.1); 
+					}
+
+				}); 
+
+				canvas.drawSprite(ui.get("lines", 1), canvas.centerX(44), 130); 
+
+			}
+
+
+			window.requestAnimationFrame(loop);
+			return; 
+
+		}
 
 		if (paused) {
 			
-			// Request the next frame 
 			window.requestAnimationFrame(loop);
-
 			return ;
 		}
 
@@ -248,7 +356,8 @@ window.onload = function() {
 			tickTime = Date.now(); 
 		}
 
-		canvas.clear();
+		// Background color 
+		canvas.flood("#888");
 
 		frames ++; 
 
@@ -381,12 +490,13 @@ window.onload = function() {
 		// Let it draw itself - not sure this is a good idea 
 		player.draw();
 
+		var giantX = false; 
+
 		// Are we in the end game yet? 
 		if (Fish.fishKilled > fishBeforeLevel3 && this.fishes.length === 0) { 
 			endgame++; 
 
 			// Giant fish comes in
-			var giantX; 
 
 			if (waterLevel < 20) {
 				player.onSubmarine = true; 
@@ -434,6 +544,37 @@ window.onload = function() {
 			}
 
 		}
+
+		// Check if the missiles are colliding with the end game fish, or the pipe
+		var testBounds = [ [400, 470, 20, 20] ];
+		
+		if (giantX !== false) {
+			testBounds.push( [giantX, 300, 200, 90]);
+			testBounds.push( [giantX, 440, 200, 90]);
+		}
+
+
+		player.missiles = _.map(player.missiles, function(missile) {
+			
+			var missileBounds = [missile.position[0] + 6, missile.position[1] + 10, 32, 8];
+
+			_.each(testBounds, function(bounds) {
+				if (debug) { 	
+					// Show bounds
+					c.strokeStyle = "white";
+					c.strokeRect(bounds[0] + 0.5, bounds[1] + 0.5, bounds[2], bounds[3]); 
+				}
+
+				// Tell the missile it hit something 
+				if (collides(bounds, missileBounds)) {
+					missile.hit ++; 
+				}
+			});
+
+			return missile;
+
+		}); 
+
 
 		// Draw every fish 
 		fishCollide = false;  
