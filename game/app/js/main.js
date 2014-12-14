@@ -1,10 +1,10 @@
 var debug = false; 
 var debugConsole = false; 
 
-var hardness = 1;
+var hardness = 8;
 var fishBeforeLevel2 = hardness * 1; 
 var fishBeforeLevel3 = hardness * 2; 
-var volume = 0.0; 
+var volume = 0.4; 
 
 
 window.onload = function() {
