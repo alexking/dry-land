@@ -4,7 +4,7 @@ var debugConsole = false;
 var hardness = 8;
 var fishBeforeLevel2 = hardness * 1; 
 var fishBeforeLevel3 = hardness * 2; 
-var volume = 0.4; 
+var volume = 0; 
 
 
 window.onload = function() {
@@ -249,6 +249,8 @@ window.onload = function() {
 		if (startScreen && !started) {
 
 			canvas.flood("#888");
+
+			//emitter.position = [canvas.mouseX, canvas.mouseY];
 
 			// Mouse bounds 
 			var mouseBounds = [canvas.mouseX,   canvas.mouseY,   1, 1]; 

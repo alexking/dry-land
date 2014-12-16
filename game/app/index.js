@@ -4073,6 +4073,34 @@ Fish.prototype.draw = function() {
 var Game = function() {
 	this.scale = 1; 
 };
+_.mixin({ 
+	pixels : function(width, height, callback) {
+		for (var x = 0; x < width; x ++) {
+			for (var y = 0; y < height; y ++) {
+				callback(x, y); 
+			}
+		}
+	},
+
+	/**
+	 * Takes an array of rows and provides a callback with a pixel at a time 
+	 */
+	eachPixel : function(data, callback) { 
+		var x = 0;
+		var y = 0; 
+
+		_.each(data, function(row) {
+			_.each(row, function(pixel) {
+				callback(x, y, pixel);
+				x ++;
+			});
+
+			x = 0;
+			y ++; 
+		});
+	}
+});
+
 function prefices() {
 	return ["", "o", "ms", "moz", "webkit"];
 }
@@ -4090,7 +4118,7 @@ function hexToRGB(hex) {
 
 function collides(a, b) {
 
-	//  ( aLeft < bRight ) && (aLeft > bLeft)
+	//  ( aLeft <= bRight ) && (aRight >= bLeft)
 	//  aX   < bX   + bW   && aX   > bX   && 
 	//  aY   < bY   + bH   && aY   > bY  
 	if (a[0] <= b[0] + b[2] && a[0] + a[2] >= b[0] &&
@@ -4199,13 +4227,171 @@ Keys.prototype.bind = function() {
 
 };
 
-var Particles = function() {
+/**
+ * Particle Systems
+ */
+
+var ParticleSystem = function(canvas, defaults) {
+	this.canvas = canvas;
+
+	this.emitters  = [];
+	this.particles = []; 
+
+	if (_.isUndefined(defaults)) {
+		defaults = {};
+	}
+
+	_.defaults(defaults, {
+		color: [255, 255, 255],
+		lifetime: 250,
+		velocity: [1, 0],
+		randomVelocity: [0.5, 0.5],
+		randomJitter: [0, 0],
+		fade : true
+	});
+
+	// Particle defaults 
+	this.defaults = defaults; 
+};
+
+ParticleSystem.prototype.draw = function() {
+	var c = this.canvas.c; 
+
+	// Emitters
+	this.emitters = _.filter(this.emitters, function(emitter) {
+		
+		// Let the emitter emit things 
+		return emitter.emit();
+
+	});
+
+	// Particles
+	this.particles = _.filter(this.particles, function(particle) {
+
+		// Draw
+		return particle.draw();
+
+	});
+
 
 };
 
-var Particle = function() {
+ParticleSystem.prototype.addParticle = function(position, options) {
+
+	var particle = new Particle(this, position, options);
+
+	this.particles.push(particle);
+
+	return particle; 
+};
+
+ParticleSystem.prototype.addEmitter = function(position, data, rate) {
+	
+	// Construct
+	var emitter = new ParticleEmitter(this, position, data, rate);
+	
+	// Add to emitters 
+	this.emitters.push(emitter);
+
+	return emitter; 
+};
+
+/**
+ * ParticleEmitter
+ * @param ParticleSystem  parent system
+ * @param tuple           position 
+ * @param array           data     array of arrays
+ */
+var ParticleEmitter = function(system, position, data, rate) {
+	this.system = system; 
+	this.position = position;
+	this.data = data; 	
+	this.rate = rate; 
+	this.dead = false; 
+};
+
+ParticleEmitter.prototype.emit = function() {
+
+	var self = this; 
+	var canvas = this.system.canvas; 
+
+	_.eachPixel(this.data, function(x, y, freq) {
+	
+		// Do we emit from this?
+		if (freq) { 
+			
+			// Check if we should emit this time 
+			if (_.random(1, self.rate) == 1) {
+
+				self.system.addParticle([self.position[0] + x * canvas.scale, self.position[1] + y * canvas.scale]);
+
+				// Emit!
+				if (debug) {
+					canvas.c.fillStyle = "red";
+					canvas.c.fillRect(self.position[0] + x * canvas.scale, self.position[1] + y * canvas.scale, canvas.scale,canvas. scale);
+				}
+			}
+
+		}
+
+	});
+
+	return ! this.dead; 
 
 };
+
+var Particle = function(system, position, options) {
+	if (_.isUndefined(options)) {
+		options = {};
+	}
+
+	this.system = system;
+	this.position = position;
+	this.options = options; 
+
+	_.defaults(this.options, this.system.defaults);
+
+	// Random velocity must be evaluated now 
+	this.options.velocity = [ 
+		this.options.velocity[0] + (_.random(-10, 10) / 10) * this.options.randomVelocity[0],
+		this.options.velocity[1] + (_.random(-10, 10) / 10) * this.options.randomVelocity[1],
+	];
+
+	this.life = 0;
+};
+
+Particle.prototype.draw = function() {
+
+	var scale = this.system.canvas.scale; 
+
+	this.life++; 
+
+
+	var color = this.options.color; 
+	var opacity = color[3] * (1.0 - (this.life / this.options.lifetime ));
+
+	this.system.canvas.c.fillStyle = "rgba(" + color[0] + ", " + color[1] + ", " + color[2] + ", " + opacity + ")";
+	this.system.canvas.c.fillRect(this.position[0] , this.position[1] , scale, scale);
+
+	var randomJitter = [
+		(_.random(-10, 10) / 10) * this.options.randomJitter[0], 
+		(_.random(-10, 10) / 10) * this.options.randomJitter[1]
+	];
+
+	// Move ourselves 
+	this.position[0] += this.options.velocity[0] + randomJitter[0];
+	this.position[1] += this.options.velocity[1] + randomJitter[1];
+
+	if (this.life > this.options.lifetime) {
+		return false;
+	}
+
+	return true; 
+};
+
+
+
+
 var Player = function(game, canvas, which) {
 	this.keyName = false; 
 	this.zeroOneTwo = 0; 
@@ -4240,6 +4426,32 @@ var Player = function(game, canvas, which) {
 
 	// Missiles 
 	this.missiles = [ ]; 
+
+
+	// Particle system
+	this.particles = new ParticleSystem(canvas, {
+		color: [255, 255, 255, 0.2],
+		lifetime: 40,
+		velocity: [1, 0],
+		randomVelocity: [0.6, 0.6],
+		randomJitter: [0, 0],
+		fade : true
+	});
+
+	var pattern = [
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+	];
+
+	this.particleEmitter = this.particles.addEmitter([5, 5], pattern, 10);
 
 };
 
@@ -4402,6 +4614,27 @@ Player.prototype.draw = function() {
 
 	} else if (this.isSubmarine) { 
 		
+		var particleVelocity = 1; 
+		if (this.keys.pressing("left") || this.keys.pressing("right")) {
+			this.particleEmitter.rate = 4; 
+			particleVelocity = 2; 
+		} else {
+			particleVelocity = 1; 
+			this.particleEmitter.rate = 10; 
+		}
+
+		if (this.direction == 1) {
+			this.particleEmitter.position = [this.position[0] - 1 , this.position[1] + 11]; 
+			this.particles.defaults.velocity = [-1 * particleVelocity, 0];
+		} else {
+			this.particleEmitter.position = [this.position[0] + 64 , this.position[1] + 11]; 
+			this.particles.defaults.velocity = [particleVelocity, 0];
+		}
+
+
+		// Time to draw particles!
+		this.particles.draw();
+
 		spriteNumber = this.direction; 
 
 		if (this.health < 3) {
@@ -4452,13 +4685,17 @@ Player.prototype.draw = function() {
 		if (this.keys.pressing("space")) {
 			
 			if (!this.firingMissile) {
-			
+				
+				var missilePosition = [this.position[0] + 14, this.position[1] + 6]; 
+
 				this.missiles.push({
-					position: [this.position[0] + 14, this.position[1] + 6],
+					position: missilePosition,
 					velocity: [this.direction == 1 ? 8 : -8, 0],
 					direction: this.direction,
 					hit: false, 
 					stop: false,
+					particles: this.particles.addEmitter(missilePosition, [[1], [1], [1], [1]], 10)
+
 				});
 			}
 
@@ -4524,12 +4761,20 @@ Player.prototype.draw = function() {
 
 		// Are we past the edges?
 		if (missile.position[0] > 500 || missile.hit > 1) {
+			missile.particles.dead = true; 
 			return false; 
 		}
 
 		// Continue to propel 
 		missile.position[0] += missile.velocity[0]; 
 		missile.position[1] += missile.velocity[1]; 
+
+		// Modify the particle emitters location
+		if (missile.direction == 1) {
+			missile.particles.position = [missile.position[0] - 1 , missile.position[1] + 11]; 
+		} else {
+			missile.particles.position = [missile.position[0] + 38, missile.position[1] + 11]; 
+		}
 
 		var sprite = missile.direction;
 
@@ -4594,10 +4839,10 @@ Sprite.prototype.get = function(name, x, y) {
 var debug = false; 
 var debugConsole = false; 
 
-var hardness = 1;
+var hardness = 8;
 var fishBeforeLevel2 = hardness * 1; 
 var fishBeforeLevel3 = hardness * 2; 
-var volume = 0.4; 
+var volume = 0; 
 
 
 window.onload = function() {
@@ -4842,6 +5087,8 @@ window.onload = function() {
 		if (startScreen && !started) {
 
 			canvas.flood("#888");
+
+			//emitter.position = [canvas.mouseX, canvas.mouseY];
 
 			// Mouse bounds 
 			var mouseBounds = [canvas.mouseX,   canvas.mouseY,   1, 1]; 

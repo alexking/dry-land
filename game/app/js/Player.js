@@ -33,6 +33,32 @@ var Player = function(game, canvas, which) {
 	// Missiles 
 	this.missiles = [ ]; 
 
+
+	// Particle system
+	this.particles = new ParticleSystem(canvas, {
+		color: [255, 255, 255, 0.2],
+		lifetime: 40,
+		velocity: [1, 0],
+		randomVelocity: [0.6, 0.6],
+		randomJitter: [0, 0],
+		fade : true
+	});
+
+	var pattern = [
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+		[1],
+	];
+
+	this.particleEmitter = this.particles.addEmitter([5, 5], pattern, 10);
+
 };
 
 Player.prototype.setCharacter = function(which) {
@@ -194,6 +220,27 @@ Player.prototype.draw = function() {
 
 	} else if (this.isSubmarine) { 
 		
+		var particleVelocity = 1; 
+		if (this.keys.pressing("left") || this.keys.pressing("right")) {
+			this.particleEmitter.rate = 4; 
+			particleVelocity = 2; 
+		} else {
+			particleVelocity = 1; 
+			this.particleEmitter.rate = 10; 
+		}
+
+		if (this.direction == 1) {
+			this.particleEmitter.position = [this.position[0] - 1 , this.position[1] + 11]; 
+			this.particles.defaults.velocity = [-1 * particleVelocity, 0];
+		} else {
+			this.particleEmitter.position = [this.position[0] + 64 , this.position[1] + 11]; 
+			this.particles.defaults.velocity = [particleVelocity, 0];
+		}
+
+
+		// Time to draw particles!
+		this.particles.draw();
+
 		spriteNumber = this.direction; 
 
 		if (this.health < 3) {
@@ -244,13 +291,17 @@ Player.prototype.draw = function() {
 		if (this.keys.pressing("space")) {
 			
 			if (!this.firingMissile) {
-			
+				
+				var missilePosition = [this.position[0] + 14, this.position[1] + 6]; 
+
 				this.missiles.push({
-					position: [this.position[0] + 14, this.position[1] + 6],
+					position: missilePosition,
 					velocity: [this.direction == 1 ? 8 : -8, 0],
 					direction: this.direction,
 					hit: false, 
 					stop: false,
+					particles: this.particles.addEmitter(missilePosition, [[1], [1], [1], [1]], 10)
+
 				});
 			}
 
@@ -316,12 +367,20 @@ Player.prototype.draw = function() {
 
 		// Are we past the edges?
 		if (missile.position[0] > 500 || missile.hit > 1) {
+			missile.particles.dead = true; 
 			return false; 
 		}
 
 		// Continue to propel 
 		missile.position[0] += missile.velocity[0]; 
 		missile.position[1] += missile.velocity[1]; 
+
+		// Modify the particle emitters location
+		if (missile.direction == 1) {
+			missile.particles.position = [missile.position[0] - 1 , missile.position[1] + 11]; 
+		} else {
+			missile.particles.position = [missile.position[0] + 38, missile.position[1] + 11]; 
+		}
 
 		var sprite = missile.direction;
 
