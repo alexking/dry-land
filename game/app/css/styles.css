@@ -1,0 +1,15 @@
+body {
+	background: #333; 
+	margin: 0;
+	padding: 0;
+}
+
+#center {
+	width: 528px;
+	margin: 10px auto;
+}
+
+canvas {
+	border-width: 14px;
+	border-image: url(../assets/corner.png) 14;
+}

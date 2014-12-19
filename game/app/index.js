@@ -4166,12 +4166,54 @@ var Keys = function() {
 		39: "right",
 		68: "right",
 		32: "space", 
-		27: "esc"
+		27: "esc",
+		77: "m"
 	};
 };
 
 Keys.prototype.pressing = function(name) {
 	return _.indexOf(this.keys, name) !== -1;
+};
+
+Keys.prototype.toggle = function(key, callback) {
+	var self = this; 
+
+	var keyReleased = true; 
+
+	// When a key goes down
+	window.addEventListener("keydown", function(event) {
+		
+		// Check if it matches the key we want 
+		if (self.keyToName(event.keyCode) == key) {
+
+			// If the key has been released, then tell the callback
+			if (keyReleased) {
+				callback(key);
+
+				// The key has not been released yet 
+				keyReleased = false; 
+			}
+
+			// Listen for the up event for this key 
+			var keyUpEvent = function(event) {
+
+				// Is this the key we were looking for?
+				if (self.keyToName(event.keyCode) == key) {
+
+					// Release the key 
+					keyReleased = true; 
+
+					// Stop listening 
+					window.removeEventListener("keyup", keyUpEvent);
+
+				}
+			};
+
+			window.addEventListener("keyup", keyUpEvent);
+		}
+
+	});
+
 };
 
 Keys.prototype.keyDown = function(code) {
@@ -4188,10 +4230,13 @@ Keys.prototype.keyDown = function(code) {
 	}
 };
 
+Keys.prototype.keyToName = function(code) {
+	return _.isUndefined(this.codeToName[code]) ? false : this.codeToName[code]; 
+};
 
 Keys.prototype.keyUp = function(code) {
 	// What key just changed?
-	var keyName = _.isUndefined(this.codeToName[code]) ? false : this.codeToName[code]; 
+	var keyName = this.keyToName(code);
 
 	if (this.onKeyUp){
 		this.onKeyUp(keyName);
@@ -4223,6 +4268,10 @@ Keys.prototype.bind = function() {
 
 		// Cancel event	
 		return false; 
+	};
+
+	window.onkeypress = function(e) {
+		self.lastKey = String.fromCharCode(e.keyCode);
 	};
 
 };
@@ -4842,7 +4891,7 @@ var debugConsole = false;
 var hardness = 8;
 var fishBeforeLevel2 = hardness * 1; 
 var fishBeforeLevel3 = hardness * 2; 
-var volume = 0; 
+var volume = 0.4; 
 
 
 window.onload = function() {
@@ -5046,8 +5095,30 @@ window.onload = function() {
 	var startScreen = true; 
 	var started = false; 
 	var paused = false; 
-	var escReleased = true;
+	//var escReleased = true;
 
+	keys.toggle("esc", function() {
+		paused = !paused; 
+
+		if (paused) {
+			out.volume = 0;
+		} else {
+			out.volume = volume;
+		}
+	});
+
+	var muted = false; 
+	keys.toggle("m", function() {
+		muted = !muted;
+
+		if (muted) {
+			out.volume = 0;
+		} else {
+			out.volume = volume;
+		}
+	});
+
+/*
 	keys.onKeyDown = function(name) {
 		if (name == "esc") {
 			if (escReleased) {
@@ -5067,7 +5138,7 @@ window.onload = function() {
 		if (name == "esc") {
 			escReleased = true; 
 		}
-	};
+	};*/
 
 
 	// Create characters
@@ -5087,8 +5158,6 @@ window.onload = function() {
 		if (startScreen && !started) {
 
 			canvas.flood("#888");
-
-			//emitter.position = [canvas.mouseX, canvas.mouseY];
 
 			// Mouse bounds 
 			var mouseBounds = [canvas.mouseX,   canvas.mouseY,   1, 1]; 
@@ -5111,10 +5180,11 @@ window.onload = function() {
 
 				if (collides(boxBounds, mouseBounds)) {
 				
-					canvas.cursor("pointer");
-
 					if (canvas.mouseDown) {
+						canvas.cursor("pointer");
 						started = true; 
+					} else {
+						canvas.cursor("auto");
 					}
 
 				} 

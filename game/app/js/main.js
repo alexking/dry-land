@@ -208,8 +208,30 @@ window.onload = function() {
 	var startScreen = true; 
 	var started = false; 
 	var paused = false; 
-	var escReleased = true;
+	//var escReleased = true;
 
+	keys.toggle("esc", function() {
+		paused = !paused; 
+
+		if (paused) {
+			out.volume = 0;
+		} else {
+			out.volume = volume;
+		}
+	});
+
+	var muted = false; 
+	keys.toggle("m", function() {
+		muted = !muted;
+
+		if (muted) {
+			out.volume = 0;
+		} else {
+			out.volume = volume;
+		}
+	});
+
+/*
 	keys.onKeyDown = function(name) {
 		if (name == "esc") {
 			if (escReleased) {
@@ -229,7 +251,7 @@ window.onload = function() {
 		if (name == "esc") {
 			escReleased = true; 
 		}
-	};
+	};*/
 
 
 	// Create characters
@@ -249,8 +271,6 @@ window.onload = function() {
 		if (startScreen && !started) {
 
 			canvas.flood("#888");
-
-			//emitter.position = [canvas.mouseX, canvas.mouseY];
 
 			// Mouse bounds 
 			var mouseBounds = [canvas.mouseX,   canvas.mouseY,   1, 1]; 
@@ -273,10 +293,11 @@ window.onload = function() {
 
 				if (collides(boxBounds, mouseBounds)) {
 				
-					canvas.cursor("pointer");
-
 					if (canvas.mouseDown) {
+						canvas.cursor("pointer");
 						started = true; 
+					} else {
+						canvas.cursor("auto");
 					}
 
 				} 
